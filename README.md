@@ -1,6 +1,6 @@
 # AstrBot Plugin Social Context
 
-轻量群聊状态感知层。它借鉴 heartflow 的“原始群聊状态缓冲 / 当前氛围判断”思路，但不接管主动发言裁决，定位为更稳定、可复用的 social context layer。
+轻量群聊状态感知层。它维护短期群氛围、互动事件和用户熟悉度，并向回复模型或外部决策插件提供可配置的 social context。
 
 ## 当前功能
 
@@ -32,7 +32,7 @@
 
 ### 判断模型参考
 
-供 heartflow / proactive_chat 等插件在小模型判断阶段调用，重点是辅助 social / timing / willingness。
+供外部主动回复/决策插件在小模型判断阶段调用，重点是辅助 social / timing / willingness。
 
 ```text
 ## Social Context 判断参考

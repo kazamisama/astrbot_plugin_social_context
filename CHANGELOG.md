@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.1 - 2026-06-09
+
+- 调整配置与文档措辞，移除对特定消费插件的绑定描述。
+- 判断阶段 prompt 保持通用外部决策接口定位，与 heartflow 等具体插件配置解耦。
+
 ## v0.3.0 - 2026-06-09
 
 - 新增用户可编辑的 `reply_prompt_template` 与 `judge_prompt_template` 配置项。
@@ -10,7 +15,7 @@
 
 - 新增双模块化 prompt 生成：正式回复参考与判断模型参考分离。
 - 新增 `build_reply_prompt_block(scope, event)`，用于正式 LLM 回复阶段。
-- 新增 `build_judge_prompt_block(scope, event, max_age=None)`，用于 heartflow/proactive 等小模型判断阶段。
+- 新增 `build_judge_prompt_block(scope, event, max_age=None)`，用于外部主动回复/决策插件的小模型判断阶段。
 - 新增 `reply_inject_enabled` 配置项，并兼容旧 `inject_enabled`。
 - 新增 `judge_context_max_age` 配置项，控制判断模型导出的状态时间范围。
 

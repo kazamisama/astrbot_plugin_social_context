@@ -6,7 +6,6 @@ AstrBot Social Context
 - 维护短期群氛围、用户互动、bot 行为状态
 - 在 LLM 请求前按需注入一段低噪声上下文
 
-它借鉴 heartflow 的“原始群聊状态缓冲”思路，但不接管主动发言裁决，
 定位为可复用的 social context layer。
 """
 
@@ -440,7 +439,7 @@ class SocialContextPlugin(Star):
     def build_judge_prompt_block(self, scope: str, event: AstrMessageEvent, max_age: int | None = None) -> str:
         """构造给判断模型看的决策参考块。
 
-        目标：帮助 heartflow / proactive 之类的小模型判断“该不该回”。
+        目标：帮助外部主动回复/决策插件的小模型判断“该不该回”。
         文字会更偏向 social / timing / willingness，而不是回复措辞。
         """
         group = self._get_group(scope)

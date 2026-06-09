@@ -91,13 +91,13 @@
     },
     "judge_context_max_age": {
         "description": "判断模型上下文最大年龄（秒）",
-        "hint": "build_judge_prompt_block 默认只导出该时间范围内的状态，供外部主动回复/决策插件使用",
+        "hint": "build_judge_prompt_block 默认只导出该时间范围内的状态，供自主选择模型判断是否回复的流程使用",
         "type": "int",
         "default": 180
     },
     "judge_prompt_template": {
         "description": "判断模型注入模板",
-        "hint": "可编辑。用于外部主动回复/决策插件的小模型判断阶段。支持占位符同 reply_prompt_template；其中 {window_seconds} 表示判断上下文最大年龄",
+        "hint": "可编辑。用于自主选择模型判断是否回复的流程。支持占位符同 reply_prompt_template；其中 {window_seconds} 表示判断上下文最大年龄",
         "type": "text",
         "default": "## Social Context 判断参考\n- 最近{window_seconds}秒：{vibe}，{message_count}条消息，{active_user_count}名活跃用户，{poke_count}次戳一戳。\n- 最近较活跃的人：{recent_speakers}。\n- 最近一次戳一戳：{latest_poke_sender} 戳了 {latest_poke_target}。\n- bot 上次发言距今约：{last_bot_reply_elapsed}。\n- 当前发言者：{current_user_name}({current_user_id})，今日消息{current_user_message_count_today}条，戳人{current_user_poke_sent_today}次，熟悉度约{current_user_familiarity}/100。\n- 使用方式：只作为 social/timing/willingness 的参考；不要因为观察存在就强行判定应该回复。"
     }

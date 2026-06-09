@@ -439,7 +439,7 @@ class SocialContextPlugin(Star):
     def build_judge_prompt_block(self, scope: str, event: AstrMessageEvent, max_age: int | None = None) -> str:
         """构造给判断模型看的决策参考块。
 
-        目标：帮助外部主动回复/决策插件的小模型判断“该不该回”。
+        目标：帮助自主选择的判断模型评估“该不该回”。
         文字会更偏向 social / timing / willingness，而不是回复措辞。
         """
         group = self._get_group(scope)

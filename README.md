@@ -1,6 +1,6 @@
 # AstrBot Plugin Social Context
 
-轻量群聊状态感知层。它维护短期群氛围、互动事件和用户熟悉度，并向回复模型或外部决策插件提供可配置的 social context。
+轻量群聊状态感知层。它维护短期群氛围、互动事件和用户熟悉度，并向回复模型或“自主选择模型用于判断是否回复”的流程提供可配置 social context。
 
 ## 当前功能
 
@@ -32,7 +32,7 @@
 
 ### 判断模型参考
 
-供外部主动回复/决策插件在小模型判断阶段调用，重点是辅助 social / timing / willingness。
+供“自主选择模型用于判断是否回复”的流程调用，重点是辅助 social / timing / willingness。
 
 ```text
 ## Social Context 判断参考

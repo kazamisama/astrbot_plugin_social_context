@@ -1,0 +1,80 @@
+{
+    "enabled": {
+        "description": "启用插件",
+        "hint": "关闭后不监听、不注入、不保存状态",
+        "type": "bool",
+        "default": true
+    },
+    "only_group": {
+        "description": "仅群聊注入",
+        "hint": "开启后私聊不会注入 social context",
+        "type": "bool",
+        "default": true
+    },
+    "inject_enabled": {
+        "description": "注入群聊状态到提示词",
+        "hint": "开启后在 LLM 请求前追加低优先级群聊观察",
+        "type": "bool",
+        "default": true
+    },
+    "inject_cd": {
+        "description": "同会话注入间隔（秒）",
+        "hint": "防止每条消息都重复注入状态",
+        "type": "float",
+        "default": 20.0
+    },
+    "window_seconds": {
+        "description": "短期状态窗口（秒）",
+        "hint": "统计最近多少秒内的消息和戳一戳",
+        "type": "int",
+        "default": 60
+    },
+    "max_messages": {
+        "description": "最多保留消息数",
+        "hint": "窗口外还会按数量做硬限制",
+        "type": "int",
+        "default": 80
+    },
+    "active_message_threshold": {
+        "description": "活跃阈值",
+        "hint": "窗口消息数达到该值且参与者至少2人，视为群聊较活跃",
+        "type": "int",
+        "default": 6
+    },
+    "quiet_message_threshold": {
+        "description": "安静阈值",
+        "hint": "窗口消息数小于等于该值，视为群聊偏安静",
+        "type": "int",
+        "default": 1
+    },
+    "familiarity_message_gain": {
+        "description": "发言熟悉度增量",
+        "hint": "用户每发一条消息增加的熟悉度",
+        "type": "float",
+        "default": 0.4
+    },
+    "familiarity_poke_gain": {
+        "description": "戳一戳熟悉度增量",
+        "hint": "用户每戳一次增加的熟悉度",
+        "type": "float",
+        "default": 0.8
+    },
+    "persist_enabled": {
+        "description": "持久化状态",
+        "hint": "开启后将状态保存为 JSON",
+        "type": "bool",
+        "default": true
+    },
+    "state_path": {
+        "description": "状态文件路径",
+        "hint": "留空使用默认 data/plugin_data/astrbot_plugin_social_context/social_context_state.json",
+        "type": "string",
+        "default": ""
+    },
+    "save_interval": {
+        "description": "保存间隔（秒）",
+        "hint": "普通消息触发的最小写盘间隔；戳一戳会强制保存",
+        "type": "int",
+        "default": 60
+    }
+}

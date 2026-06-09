@@ -8,9 +8,9 @@
 - 监听 aiocqhttp 群戳一戳 notice，记录窗口内戳一戳事件。
 - 维护用户今日互动与简单熟悉度。
 - 在 LLM 请求前注入低优先级观察，不要求模型复述统计。
-- v0.2.0 起提供双模块化 prompt：
-  - `build_reply_prompt_block(scope, event)`：给正式回复模型，影响“怎么说”。
-  - `build_judge_prompt_block(scope, event, max_age=None)`：给 heartflow/proactive 等判断模型，影响“回不回”。
+- v0.3.0 起两个 prompt 都可在配置中自定义模板：
+  - `reply_prompt_template`：正式回复注入模板。
+  - `judge_prompt_template`：判断模型注入模板。
 - 提供 `/social_context` 查看当前会话状态。
 - 管理员可用 `/social_context_reset` 重置当前会话状态。
 - JSON 持久化，默认保存到 `data/plugin_data/astrbot_plugin_social_context/social_context_state.json`。
@@ -43,9 +43,35 @@
 - 使用方式：只作为 social/timing/willingness 的参考；不要因为观察存在就强行判定应该回复。
 ```
 
+## 可用模板变量
+
+`reply_prompt_template` 和 `judge_prompt_template` 都支持这些占位符：
+
+```text
+{scope}
+{group_id}
+{window_seconds}
+{vibe}
+{message_count}
+{active_user_count}
+{recent_speakers}
+{poke_count}
+{latest_poke_sender}
+{latest_poke_target}
+{last_bot_reply_elapsed}
+{current_user_id}
+{current_user_name}
+{current_user_message_count_today}
+{current_user_poke_sent_today}
+{current_user_poke_received_today}
+{current_user_familiarity}
+```
+
+缺失变量会保留原样；模板格式错误时会自动回退默认模板。
+
 ## 设计边界
 
-v0.2.0 仍只做状态层：观察、记录、摘要、prompt 生成。
+v0.3.0 仍只做状态层：观察、记录、摘要、prompt 生成。
 
 暂不做：
 

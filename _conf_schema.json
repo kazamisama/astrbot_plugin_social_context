@@ -17,6 +17,12 @@
         "type": "bool",
         "default": true
     },
+    "reply_prompt_template": {
+        "description": "正式回复注入模板",
+        "hint": "可编辑。用于正式 LLM 回复阶段。支持占位符：{window_seconds} {vibe} {message_count} {active_user_count} {recent_speakers} {poke_count} {latest_poke_sender} {latest_poke_target} {last_bot_reply_elapsed} {current_user_name} {current_user_id} {current_user_message_count_today} {current_user_poke_sent_today} {current_user_poke_received_today} {current_user_familiarity}",
+        "type": "text",
+        "default": "[群聊状态观察 / 正式回复参考]\n最近{window_seconds}秒：{vibe}，{message_count}条消息，{active_user_count}人参与。\n最近较活跃的人：{recent_speakers}。\n窗口内有{poke_count}次戳一戳，最近一次：{latest_poke_sender} 戳了 {latest_poke_target}。\n你上次在这个群发言距今：{last_bot_reply_elapsed}。\n当前发言者：{current_user_name}({current_user_id})，今日消息{current_user_message_count_today}条，熟悉度约{current_user_familiarity}/100。\n这些只是低优先级观察：自然使用，不要复述统计，不要因为看到观察就强行解释。"
+    },
     "inject_enabled": {
         "description": "旧版注入开关（兼容）",
         "hint": "v0.1.0 旧配置名。v0.2.0 起建议使用 reply_inject_enabled；当 reply_inject_enabled 不存在时才回退读取此项",
@@ -88,5 +94,11 @@
         "hint": "build_judge_prompt_block 默认只导出该时间范围内的状态，供 heartflow/proactive 等判断模型使用",
         "type": "int",
         "default": 180
+    },
+    "judge_prompt_template": {
+        "description": "判断模型注入模板",
+        "hint": "可编辑。用于 heartflow/proactive 等小模型判断阶段。支持占位符同 reply_prompt_template；其中 {window_seconds} 表示判断上下文最大年龄",
+        "type": "text",
+        "default": "## Social Context 判断参考\n- 最近{window_seconds}秒：{vibe}，{message_count}条消息，{active_user_count}名活跃用户，{poke_count}次戳一戳。\n- 最近较活跃的人：{recent_speakers}。\n- 最近一次戳一戳：{latest_poke_sender} 戳了 {latest_poke_target}。\n- bot 上次发言距今约：{last_bot_reply_elapsed}。\n- 当前发言者：{current_user_name}({current_user_id})，今日消息{current_user_message_count_today}条，戳人{current_user_poke_sent_today}次，熟悉度约{current_user_familiarity}/100。\n- 使用方式：只作为 social/timing/willingness 的参考；不要因为观察存在就强行判定应该回复。"
     }
 }

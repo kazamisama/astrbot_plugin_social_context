@@ -337,6 +337,81 @@ class SocialContextPlugin(Star):
             return self._cfg_bool("reply_inject_enabled", True)
         return self._cfg_bool("inject_enabled", True)
 
+    def _format_template(self, template: str, variables: dict[str, Any], fallback: str) -> str:
+        """安全格式化用户可编辑 prompt 模板。
+
+        使用 format_map 支持 {变量名} 占位符；缺失变量保留原样，模板错误时回退默认模板。
+        """
+
+        class SafeDict(dict):
+            def __missing__(self, key: str) -> str:
+                return "{" + key + "}"
+
+        try:
+            return template.format_map(SafeDict(variables)).strip()
+        except Exception as exc:
+            logger.warning(f"[social_context] prompt 模板格式化失败，使用默认模板: {exc}")
+            return fallback.format_map(SafeDict(variables)).strip()
+
+    def _build_prompt_variables(
+        self,
+        *,
+        group: GroupContext,
+        event: AstrMessageEvent,
+        now: float,
+        messages: list[MessageRecord],
+        pokes: list[PokeRecord],
+        window_seconds: int,
+    ) -> dict[str, Any]:
+        active_users = {m.sender_id for m in messages if not m.is_bot}
+        vibe = self._vibe_label(len(messages), len(active_users))
+        speaker_counter = Counter(m.sender_name or m.sender_id for m in messages if not m.is_bot)
+        recent_speakers = "、".join(name for name, _ in speaker_counter.most_common(3)) or "暂无"
+        latest_poke = pokes[-1] if pokes else None
+        current_user = self._get_user(str(event.get_sender_id()))
+
+        return {
+            "scope": self._scope_id(event),
+            "group_id": event.get_group_id() or "",
+            "window_seconds": window_seconds,
+            "vibe": vibe,
+            "message_count": len(messages),
+            "active_user_count": len(active_users),
+            "recent_speakers": recent_speakers,
+            "poke_count": len(pokes),
+            "latest_poke_sender": latest_poke.sender_id if latest_poke else "暂无",
+            "latest_poke_target": latest_poke.target_id if latest_poke else "暂无",
+            "last_bot_reply_elapsed": self._format_elapsed(now - group.last_bot_reply_time) if group.last_bot_reply_time else "暂无记录",
+            "current_user_id": str(event.get_sender_id()),
+            "current_user_name": self._sender_name(event),
+            "current_user_message_count_today": current_user.message_count_today,
+            "current_user_poke_sent_today": current_user.poke_sent_today,
+            "current_user_poke_received_today": current_user.poke_received_today,
+            "current_user_familiarity": f"{current_user.familiarity:.1f}",
+        }
+
+    def _default_reply_prompt_template(self) -> str:
+        return (
+            "[群聊状态观察 / 正式回复参考]\n"
+            "最近{window_seconds}秒：{vibe}，{message_count}条消息，{active_user_count}人参与。\n"
+            "最近较活跃的人：{recent_speakers}。\n"
+            "窗口内有{poke_count}次戳一戳，最近一次：{latest_poke_sender} 戳了 {latest_poke_target}。\n"
+            "你上次在这个群发言距今：{last_bot_reply_elapsed}。\n"
+            "当前发言者：{current_user_name}({current_user_id})，今日消息{current_user_message_count_today}条，熟悉度约{current_user_familiarity}/100。\n"
+            "这些只是低优先级观察：自然使用，不要复述统计，不要因为看到观察就强行解释。"
+        )
+
+    def _default_judge_prompt_template(self) -> str:
+        return (
+            "## Social Context 判断参考\n"
+            "- 最近{window_seconds}秒：{vibe}，{message_count}条消息，{active_user_count}名活跃用户，{poke_count}次戳一戳。\n"
+            "- 最近较活跃的人：{recent_speakers}。\n"
+            "- 最近一次戳一戳：{latest_poke_sender} 戳了 {latest_poke_target}。\n"
+            "- bot 上次发言距今约：{last_bot_reply_elapsed}。\n"
+            "- 当前发言者：{current_user_name}({current_user_id})，今日消息{current_user_message_count_today}条，戳人{current_user_poke_sent_today}次，熟悉度约{current_user_familiarity}/100。\n"
+            "- 使用方式：只作为 social/timing/willingness 的参考；不要因为观察存在就强行判定应该回复。"
+        )
+
     def build_reply_prompt_block(self, scope: str, event: AstrMessageEvent) -> str:
         """构造给正式回复模型看的低优先级观察块。
 
@@ -344,35 +419,23 @@ class SocialContextPlugin(Star):
         """
         group = self._get_group(scope)
         now = time.time()
-        active_users = self._active_users(group)
-        message_count = len(group.messages)
-        poke_count = len(group.pokes)
+        messages = list(group.messages)
+        pokes = list(group.pokes)
 
-        if message_count == 0 and poke_count == 0:
+        if not messages and not pokes:
             return ""
 
-        vibe = self._vibe_label(message_count, len(active_users))
-        recent_speakers = self._top_speakers(group, limit=3)
-        latest_poke = group.pokes[-1] if group.pokes else None
-        current_user = self._get_user(str(event.get_sender_id()))
-
-        parts = [
-            "[群聊状态观察 / 正式回复参考]",
-            f"最近{self._cfg_int('window_seconds', 60, 1)}秒：{vibe}，{message_count}条消息，{len(active_users)}人参与。",
-        ]
-        if recent_speakers:
-            parts.append("最近较活跃的人：" + "、".join(recent_speakers) + "。")
-        if poke_count:
-            parts.append(f"窗口内有{poke_count}次戳一戳。")
-        if latest_poke:
-            parts.append(f"最近一次戳一戳：{latest_poke.sender_id} 戳了 {latest_poke.target_id}。")
-        if group.last_bot_reply_time:
-            parts.append(f"你上次在这个群发言是{self._format_elapsed(now - group.last_bot_reply_time)}前。")
-        if current_user.familiarity > 0:
-            parts.append(f"当前发言者今日消息{current_user.message_count_today}条，熟悉度约{current_user.familiarity:.1f}/100。")
-
-        parts.append("这些只是低优先级观察：自然使用，不要复述统计，不要因为看到观察就强行解释。")
-        return "\n".join(parts)
+        variables = self._build_prompt_variables(
+            group=group,
+            event=event,
+            now=now,
+            messages=messages,
+            pokes=pokes,
+            window_seconds=self._cfg_int("window_seconds", 60, 1),
+        )
+        fallback = self._default_reply_prompt_template()
+        template = str(self.config.get("reply_prompt_template", "") or fallback)
+        return self._format_template(template, variables, fallback)
 
     def build_judge_prompt_block(self, scope: str, event: AstrMessageEvent, max_age: int | None = None) -> str:
         """构造给判断模型看的决策参考块。
@@ -390,29 +453,17 @@ class SocialContextPlugin(Star):
         if not messages and not pokes:
             return ""
 
-        active_users = {m.sender_id for m in messages if not m.is_bot}
-        vibe = self._vibe_label(len(messages), len(active_users))
-        speaker_counter = Counter(m.sender_name or m.sender_id for m in messages if not m.is_bot)
-        top_speakers = [name for name, _ in speaker_counter.most_common(3)]
-        latest_poke = pokes[-1] if pokes else None
-        current_user = self._get_user(str(event.get_sender_id()))
-
-        parts = [
-            "## Social Context 判断参考",
-            f"- 最近{max_age}秒：{vibe}，{len(messages)}条消息，{len(active_users)}名活跃用户，{len(pokes)}次戳一戳。",
-        ]
-        if top_speakers:
-            parts.append(f"- 最近较活跃的人：{'、'.join(top_speakers)}。")
-        if latest_poke:
-            parts.append(f"- 最近一次戳一戳：{latest_poke.sender_id} 戳了 {latest_poke.target_id}。")
-        if group.last_bot_reply_time:
-            parts.append(f"- bot 上次发言距今约{self._format_elapsed(now - group.last_bot_reply_time)}。")
-        if current_user.familiarity > 0 or current_user.message_count_today > 0 or current_user.poke_sent_today > 0:
-            parts.append(
-                f"- 当前发言者今日消息{current_user.message_count_today}条，戳人{current_user.poke_sent_today}次，熟悉度约{current_user.familiarity:.1f}/100。"
-            )
-        parts.append("- 使用方式：只作为 social/timing/willingness 的参考；不要因为观察存在就强行判定应该回复。")
-        return "\n".join(parts)
+        variables = self._build_prompt_variables(
+            group=group,
+            event=event,
+            now=now,
+            messages=messages,
+            pokes=pokes,
+            window_seconds=max_age,
+        )
+        fallback = self._default_judge_prompt_template()
+        template = str(self.config.get("judge_prompt_template", "") or fallback)
+        return self._format_template(template, variables, fallback)
 
     def _build_context_block(self, scope: str, event: AstrMessageEvent) -> str:
         """兼容 v0.1.0 的旧内部方法名。"""

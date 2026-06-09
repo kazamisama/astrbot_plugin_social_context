@@ -268,7 +268,7 @@ class SocialContextPlugin(Star):
         """在 LLM 请求前注入群聊状态摘要。"""
         if not self._cfg_bool("enabled", True):
             return
-        if not self._cfg_bool("inject_enabled", True):
+        if not self._reply_inject_enabled():
             return
         if not hasattr(request, "system_prompt"):
             return
@@ -285,7 +285,7 @@ class SocialContextPlugin(Star):
             return
 
         group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
-        block = self._build_context_block(scope, event)
+        block = self.build_reply_prompt_block(scope, event)
         if not block:
             return
 
@@ -327,7 +327,21 @@ class SocialContextPlugin(Star):
         self._save_if_needed(force=True)
         event.set_result(event.plain_result("✅ 当前会话的 Social Context 已重置"))
 
-    def _build_context_block(self, scope: str, event: AstrMessageEvent) -> str:
+    def _reply_inject_enabled(self) -> bool:
+        """正式回复模型注入开关。
+
+        v0.1.0 使用 inject_enabled；v0.2.0 起改名为 reply_inject_enabled。
+        为兼容旧配置，reply_inject_enabled 缺省时回退到 inject_enabled。
+        """
+        if "reply_inject_enabled" in self.config:
+            return self._cfg_bool("reply_inject_enabled", True)
+        return self._cfg_bool("inject_enabled", True)
+
+    def build_reply_prompt_block(self, scope: str, event: AstrMessageEvent) -> str:
+        """构造给正式回复模型看的低优先级观察块。
+
+        目标：帮助模型“怎么自然地说”，不用于判断是否应该触发回复。
+        """
         group = self._get_group(scope)
         now = time.time()
         active_users = self._active_users(group)
@@ -343,7 +357,7 @@ class SocialContextPlugin(Star):
         current_user = self._get_user(str(event.get_sender_id()))
 
         parts = [
-            "[群聊状态观察]",
+            "[群聊状态观察 / 正式回复参考]",
             f"最近{self._cfg_int('window_seconds', 60, 1)}秒：{vibe}，{message_count}条消息，{len(active_users)}人参与。",
         ]
         if recent_speakers:
@@ -357,8 +371,52 @@ class SocialContextPlugin(Star):
         if current_user.familiarity > 0:
             parts.append(f"当前发言者今日消息{current_user.message_count_today}条，熟悉度约{current_user.familiarity:.1f}/100。")
 
-        parts.append("这些只是低优先级观察：自然使用，不要复述统计，不要因为看到观察就强行回应或解释。")
+        parts.append("这些只是低优先级观察：自然使用，不要复述统计，不要因为看到观察就强行解释。")
         return "\n".join(parts)
+
+    def build_judge_prompt_block(self, scope: str, event: AstrMessageEvent, max_age: int | None = None) -> str:
+        """构造给判断模型看的决策参考块。
+
+        目标：帮助 heartflow / proactive 之类的小模型判断“该不该回”。
+        文字会更偏向 social / timing / willingness，而不是回复措辞。
+        """
+        group = self._get_group(scope)
+        now = time.time()
+        max_age = max_age or self._cfg_int("judge_context_max_age", 180, 1)
+        cutoff = now - max_age
+        messages = [m for m in group.messages if m.timestamp >= cutoff]
+        pokes = [p for p in group.pokes if p.timestamp >= cutoff]
+
+        if not messages and not pokes:
+            return ""
+
+        active_users = {m.sender_id for m in messages if not m.is_bot}
+        vibe = self._vibe_label(len(messages), len(active_users))
+        speaker_counter = Counter(m.sender_name or m.sender_id for m in messages if not m.is_bot)
+        top_speakers = [name for name, _ in speaker_counter.most_common(3)]
+        latest_poke = pokes[-1] if pokes else None
+        current_user = self._get_user(str(event.get_sender_id()))
+
+        parts = [
+            "## Social Context 判断参考",
+            f"- 最近{max_age}秒：{vibe}，{len(messages)}条消息，{len(active_users)}名活跃用户，{len(pokes)}次戳一戳。",
+        ]
+        if top_speakers:
+            parts.append(f"- 最近较活跃的人：{'、'.join(top_speakers)}。")
+        if latest_poke:
+            parts.append(f"- 最近一次戳一戳：{latest_poke.sender_id} 戳了 {latest_poke.target_id}。")
+        if group.last_bot_reply_time:
+            parts.append(f"- bot 上次发言距今约{self._format_elapsed(now - group.last_bot_reply_time)}。")
+        if current_user.familiarity > 0 or current_user.message_count_today > 0 or current_user.poke_sent_today > 0:
+            parts.append(
+                f"- 当前发言者今日消息{current_user.message_count_today}条，戳人{current_user.poke_sent_today}次，熟悉度约{current_user.familiarity:.1f}/100。"
+            )
+        parts.append("- 使用方式：只作为 social/timing/willingness 的参考；不要因为观察存在就强行判定应该回复。")
+        return "\n".join(parts)
+
+    def _build_context_block(self, scope: str, event: AstrMessageEvent) -> str:
+        """兼容 v0.1.0 的旧内部方法名。"""
+        return self.build_reply_prompt_block(scope, event)
 
     def _active_users(self, group: GroupContext) -> set[str]:
         return {m.sender_id for m in group.messages if not m.is_bot}

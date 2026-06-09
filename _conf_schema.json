@@ -11,9 +11,15 @@
         "type": "bool",
         "default": true
     },
+    "reply_inject_enabled": {
+        "description": "正式回复模型注入",
+        "hint": "开启后在正式 LLM 回复请求前追加低优先级群聊观察，影响“怎么说”，不影响“回不回”",
+        "type": "bool",
+        "default": true
+    },
     "inject_enabled": {
-        "description": "注入群聊状态到提示词",
-        "hint": "开启后在 LLM 请求前追加低优先级群聊观察",
+        "description": "旧版注入开关（兼容）",
+        "hint": "v0.1.0 旧配置名。v0.2.0 起建议使用 reply_inject_enabled；当 reply_inject_enabled 不存在时才回退读取此项",
         "type": "bool",
         "default": true
     },
@@ -76,5 +82,11 @@
         "hint": "普通消息触发的最小写盘间隔；戳一戳会强制保存",
         "type": "int",
         "default": 60
+    },
+    "judge_context_max_age": {
+        "description": "判断模型上下文最大年龄（秒）",
+        "hint": "build_judge_prompt_block 默认只导出该时间范围内的状态，供 heartflow/proactive 等判断模型使用",
+        "type": "int",
+        "default": 180
     }
 }

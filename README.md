@@ -7,7 +7,7 @@
 - 监听群聊消息，维护最近窗口内的消息数、活跃用户、最近发言者。
 - 监听 aiocqhttp 群戳一戳 notice，记录窗口内戳一戳事件。
 - 维护用户今日互动与简单熟悉度。
-- 在 LLM 请求前注入低优先级观察，不要求模型复述统计。
+- 可选：自主选择模型判断是否回复，达到阈值后触发正式回复链路。
 - v0.3.0 起两个 prompt 都可在配置中自定义模板：
   - `reply_prompt_template`：正式回复注入模板。
   - `judge_prompt_template`：判断模型注入模板。
@@ -43,6 +43,32 @@
 - 使用方式：只作为 social/timing/willingness 的参考；不要因为观察存在就强行判定应该回复。
 ```
 
+## 自主判断是否回复
+
+v0.4.0 起可以让插件自己选择一个模型来判断当前群消息是否值得主动回复。
+
+关键配置：
+
+```text
+judge_enabled              是否启用自主判断，默认 false
+judge_provider_id          判断模型提供商，可在配置界面选择
+judge_reply_threshold      触发阈值，默认 0.65
+judge_min_reply_interval   同会话主动回复最小间隔，默认 60 秒
+judge_decision_prompt      发给判断模型的 Prompt，可编辑
+```
+
+判断模型需要返回 JSON：
+
+```json
+{
+  "should_reply": true,
+  "confidence": 0.72,
+  "reasoning": "当前话题和 bot 相关，且群聊氛围适合简短插话"
+}
+```
+
+只有 `should_reply=true` 且 `confidence >= judge_reply_threshold` 时，才会设置唤醒标记，让 AstrBot 正式回复模型生成回复。
+
 ## 可用模板变量
 
 `reply_prompt_template` 和 `judge_prompt_template` 都支持这些占位符：
@@ -71,13 +97,9 @@
 
 ## 设计边界
 
-v0.3.0 仍只做状态层：观察、记录、摘要、prompt 生成。
+v0.4.0 起插件可以可选地自主判断是否回复，但仍保持轻量定位：
 
-暂不做：
-
-- 主动发言裁决
-- 自己调小模型打分
-- 插件间强依赖 API
-- 长期人格/情绪模拟
-
-这些后续可以在状态层稳定后再接。
+- 默认不启用自主判断，避免和其他主动回复方案冲突。
+- 判断模型只负责输出 `should_reply/confidence/reasoning`，正式回复仍交给 AstrBot 主回复链路。
+- 不维护长期人格或复杂情绪系统。
+- 不强依赖其他插件。

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.0 - 2026-06-09
+
+- 新增自主选择模型判断是否回复功能，可在配置中选择判断模型提供商。
+- 新增 `judge_enabled`、`judge_provider_id`、`judge_reply_threshold`、`judge_min_reply_interval`、`judge_max_retries`、`judge_decision_prompt` 配置项。
+- 判断模型输出 `should_reply/confidence/reasoning` JSON，达到阈值后触发正式回复链路。
+- social context 主动触发的正式回复会自动追加“非点名主动参与”的低优先级说明。
+
 ## v0.3.2 - 2026-06-09
 
 - 调整判断阶段配置措辞为“自主选择模型用于判断是否回复”，弱化插件依赖感。

@@ -12,6 +12,7 @@ AstrBot Social Context
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections import Counter, deque
 from dataclasses import asdict, dataclass, field
@@ -26,6 +27,54 @@ from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
+
+
+@dataclass
+class JudgeResult:
+    """自主判断是否回复的结果。"""
+
+    should_reply: bool = False
+    confidence: float = 0.0
+    reasoning: str = ""
+
+
+def _extract_json(text: str) -> dict[str, Any]:
+    """从模型输出中稳健提取 JSON 对象。"""
+    text = (text or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    cleaned = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
+        return json.loads(match.group())
+
+    raise ValueError(f"无法从模型输出中提取 JSON: {text[:200]}")
+
+
+def _clamp_01(value: Any) -> float:
+    """钉位到 [0, 1]。"""
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _to_bool(value: Any) -> bool:
+    """宽松解析模型返回的布尔值。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y", "是"}
+    return bool(value)
 
 
 @dataclass
@@ -177,7 +226,7 @@ class SocialContextPlugin(Star):
         except Exception:
             return str(event.get_sender_id())
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=900)
     async def on_group_message(self, event: AstrMessageEvent):
         """监听群消息，维护短期状态窗口。"""
         if not self._cfg_bool("enabled", True):
@@ -218,6 +267,9 @@ class SocialContextPlugin(Star):
 
         group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
         self._save_if_needed()
+
+        if not is_bot:
+            await self._maybe_trigger_autonomous_reply(event, group_id)
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -262,6 +314,110 @@ class SocialContextPlugin(Star):
         group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
         self._save_if_needed(force=True)
 
+    async def _maybe_trigger_autonomous_reply(self, event: AstrMessageEvent, scope: str) -> None:
+        """可选：自主选择模型判断是否触发正式回复。"""
+        if not self._cfg_bool("judge_enabled", False):
+            return
+        if event.is_at_or_wake_command:
+            return
+        if not (event.message_str or "").strip():
+            return
+
+        group = self._get_group(scope)
+        now = time.time()
+        cooldown = self._cfg_float("judge_min_reply_interval", 60.0, 0.0)
+        if group.last_bot_reply_time and now - group.last_bot_reply_time < cooldown:
+            logger.debug(f"[social_context] 自主判断冷却中，跳过: {scope}")
+            return
+
+        result = await self._judge_should_reply(event, scope)
+        if not result.should_reply:
+            logger.debug(
+                f"[social_context] 自主判断不回复 | confidence={result.confidence:.2f} | {result.reasoning[:80]}"
+            )
+            return
+
+        event.is_at_or_wake_command = True
+        event.set_extra("social_context_triggered", True)
+        event.set_extra("social_context_judge_reason", result.reasoning)
+        logger.info(
+            f"[social_context] 自主判断触发回复 | {scope} | confidence={result.confidence:.2f} | {result.reasoning[:80]}"
+        )
+
+    async def _judge_should_reply(self, event: AstrMessageEvent, scope: str) -> JudgeResult:
+        provider_id = str(self.config.get("judge_provider_id", "") or "").strip()
+        if not provider_id:
+            logger.warning("[social_context] judge_enabled 已开启，但 judge_provider_id 未配置")
+            return JudgeResult(reasoning="judge_provider_id 未配置")
+
+        try:
+            provider = self.context.get_provider_by_id(provider_id)
+        except Exception as exc:
+            logger.warning(f"[social_context] 获取判断模型 provider 失败: {exc}")
+            return JudgeResult(reasoning=f"获取 provider 失败: {exc}")
+        if not provider:
+            return JudgeResult(reasoning=f"provider 不存在: {provider_id}")
+
+        context_block = self.build_judge_prompt_block(scope, event)
+        if not context_block:
+            context_block = "## Social Context 判断参考\n暂无可用状态。"
+
+        threshold = self._cfg_float("judge_reply_threshold", 0.65, 0.0)
+        prompt_template = str(self.config.get("judge_decision_prompt", "") or self._default_judge_decision_prompt())
+        prompt = self._format_template(
+            prompt_template,
+            {
+                "context_block": context_block,
+                "sender_name": self._sender_name(event),
+                "sender_id": str(event.get_sender_id()),
+                "message": event.message_str or "",
+                "threshold": f"{threshold:.2f}",
+            },
+            self._default_judge_decision_prompt(),
+        )
+
+        max_retries = self._cfg_int("judge_max_retries", 1, 0)
+        content = ""
+        for attempt in range(max_retries + 1):
+            try:
+                response = await provider.text_chat(prompt=prompt, contexts=[], image_urls=[])
+                content = (getattr(response, "completion_text", "") or "").strip()
+                data = _extract_json(content)
+                confidence = _clamp_01(data.get("confidence", 0.0))
+                should_reply = _to_bool(data.get("should_reply", False)) and confidence >= threshold
+                return JudgeResult(
+                    should_reply=should_reply,
+                    confidence=confidence,
+                    reasoning=str(data.get("reasoning", "")),
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[social_context] 判断模型返回解析失败 ({attempt + 1}/{max_retries + 1}): {exc}; content={content[:200]}"
+                )
+                if attempt >= max_retries:
+                    return JudgeResult(reasoning=f"判断失败: {exc}")
+                prompt += "\n\n请注意：你必须只返回合法 JSON，不要包含 Markdown 代码块或额外解释。"
+
+        return JudgeResult(reasoning="未知判断失败")
+
+    def _default_judge_decision_prompt(self) -> str:
+        return (
+            "你是群聊机器人是否应该主动回复的判断模型。\n"
+            "请根据 Social Context、当前消息和社交时机判断是否应该回复。\n\n"
+            "{context_block}\n\n"
+            "## 当前消息\n"
+            "发送者：{sender_name}({sender_id})\n"
+            "内容：{message}\n\n"
+            "## 输出要求\n"
+            "请只返回 JSON：\n"
+            "{{\n"
+            "  \"should_reply\": true 或 false,\n"
+            "  \"confidence\": 0到1之间的小数,\n"
+            "  \"reasoning\": \"简短理由\"\n"
+            "}}\n"
+            "只有当你认为综合置信度达到 {threshold} 且确实适合自然插话时，should_reply 才为 true。"
+        )
+
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, request):
         """在 LLM 请求前注入群聊状态摘要。"""
@@ -290,6 +446,10 @@ class SocialContextPlugin(Star):
 
         group.last_injected_time = now
         request.system_prompt = (request.system_prompt or "").rstrip() + "\n\n" + block
+
+        if event.get_extra("social_context_triggered"):
+            note = "（注意：本次回复由群聊状态判断主动触发，不是用户明确点名。回复应自然、简短，像普通群成员一样加入话题。）"
+            request.system_prompt = request.system_prompt.rstrip() + "\n" + note
 
     @filter.command("social_context")
     async def social_context_status(self, event: AstrMessageEvent):

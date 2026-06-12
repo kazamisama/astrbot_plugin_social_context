@@ -148,6 +148,47 @@ class PluginHelperTests(unittest.TestCase):
         block = self.plugin.build_judge_prompt_block("group-1", event, max_age=9999999999)  # type: ignore[arg-type]
         self.assertIn("bot 相关度：strong", block)
         self.assertIn("插话空位：high", block)
+        self.assertIn("话题热度：", block)
+        self.assertIn("当前用户近期风格：", block)
+
+    def test_topic_heat_trend_rising(self) -> None:
+        messages = [
+            MessageRecord("10001", "alice", "旧消息", 20.0, False),
+            MessageRecord("10002", "bob", "新消息1", 91.0, False),
+            MessageRecord("10003", "carol", "新消息2", 95.0, False),
+            MessageRecord("10004", "dave", "新消息3", 99.0, False),
+        ]
+        trend, reason = self.plugin._topic_heat_trend(messages, 100.0, 60)
+        self.assertEqual(trend, "rising")
+        self.assertIn("增多", reason)
+
+    def test_current_user_recent_style_detects_frequent_poker(self) -> None:
+        pokes = [
+            type("P", (), {"sender_id": "10001", "timestamp": 90.0})(),
+            type("P", (), {"sender_id": "10001", "timestamp": 95.0})(),
+        ]
+        style, reason = self.plugin._current_user_recent_style("10001", [], pokes, 100.0)  # type: ignore[arg-type]
+        self.assertEqual(style, "frequent_poker")
+        self.assertIn("戳一戳", reason)
+
+    def test_autonomous_reply_budget_limits_per_hour(self) -> None:
+        self.plugin.config = _Cfg({"autonomous_reply_budget_per_hour": 1, "autonomous_reply_budget_per_day": 10})
+        group = GroupContext()
+        self.assertTrue(self.plugin._consume_autonomous_reply_budget(group, 100.0))
+        self.assertFalse(self.plugin._consume_autonomous_reply_budget(group, 110.0, dry_run=True))
+
+    def test_group_to_json_persists_budget_and_last_judge(self) -> None:
+        group = GroupContext(
+            autonomous_reply_count_today=2,
+            autonomous_reply_count_hour=1,
+            autonomous_reply_hour="2026-06-12T22",
+            last_judge_result={"should_reply": True},
+        )
+        data = self.plugin._group_to_json(group)
+        self.assertEqual(data["autonomous_reply_count_today"], 2)
+        self.assertEqual(data["autonomous_reply_count_hour"], 1)
+        self.assertEqual(data["autonomous_reply_hour"], "2026-06-12T22")
+        self.assertEqual(data["last_judge_result"]["should_reply"], True)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.5 - 2026-06-12
+
+- 新增判断模型社交信号 `topic_heat_trend`，用于描述话题热度是升温、降温、活跃还是平稳。
+- 新增判断模型社交信号 `current_user_recent_style`，用于描述当前用户近期是提问者、活跃聊天者、频繁戳一戳、话题开启者等。
+- 判断模型 JSON 输出扩展 `reply_style` 与 `reply_intent`，触发正式回复时作为低优先级风格/意图建议注入。
+- 新增主动回复预算 `autonomous_reply_budget_per_hour` / `autonomous_reply_budget_per_day`，避免自主触发过度打扰群聊。
+- 新增 `/social_context judge_last` 与 `/social_context_judge_last` 调试入口，查看最近一次自主判断结果。
+- 状态持久化同步保存主动回复预算计数与最近一次判断摘要，并保持旧状态兼容。
+
 ## v0.4.4 - 2026-06-12
 
 - 新增判断模型社交信号 `bot_relevance`：基于 bot 相关关键词、bot ID、近期 bot 发言等轻量启发式，估算当前消息与 bot/插件/模型/配置话题的相关度。

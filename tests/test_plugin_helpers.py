@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import unittest
 from collections import deque
@@ -25,12 +26,14 @@ class _Event:
         sender_id: str = "10001",
         group_id: str = "group-1",
         message: str = "当前消息",
+        extras: dict[str, object] | None = None,
     ) -> None:
         self.sender_name = sender_name
         self.sender_id = sender_id
         self.group_id = group_id
         self.unified_msg_origin = group_id
         self.message_str = message
+        self.extras = extras or {}
 
     def get_sender_name(self) -> str:
         return self.sender_name
@@ -40,6 +43,9 @@ class _Event:
 
     def get_group_id(self) -> str:
         return self.group_id
+
+    def get_extra(self, key: str, default=None):  # noqa: ANN001, ANN201 - 测试假对象
+        return self.extras.get(key, default)
 
 
 class PluginHelperTests(unittest.TestCase):
@@ -189,6 +195,26 @@ class PluginHelperTests(unittest.TestCase):
         self.assertEqual(data["autonomous_reply_count_hour"], 1)
         self.assertEqual(data["autonomous_reply_hour"], "2026-06-12T22")
         self.assertEqual(data["last_judge_result"]["should_reply"], True)
+    def test_on_llm_request_keeps_trigger_note_when_reply_inject_disabled(self) -> None:
+        class _Request:
+            system_prompt = "base"
+
+        self.plugin.config = _Cfg({"reply_inject_enabled": False})
+        self.plugin.groups["group-1"] = GroupContext()
+        event = _Event(
+            extras={
+                "social_context_triggered": True,
+                "social_context_reply_style": "short",
+                "social_context_reply_intent": "join_topic",
+            }
+        )
+        request = _Request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        self.assertIn("本次回复由群聊状态判断主动触发", request.system_prompt)
+        self.assertIn("建议回复风格：short", request.system_prompt)
+        self.assertNotIn("[群聊状态观察 / 正式回复参考]", request.system_prompt)
 
 
 if __name__ == "__main__":

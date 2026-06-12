@@ -9,7 +9,7 @@
 - 维护用户今日互动与简单熟悉度。
 - 可选：自主选择模型判断是否回复，达到阈值后触发正式回复链路。
 - v0.3.0 起两个 prompt 都可在配置中自定义模板：
-  - `reply_prompt_template`：正式回复注入模板。
+  - `reply_prompt_template`：正式回复完整注入模板（高级选项，默认不启用）。
   - `judge_prompt_template`：判断模型注入模板。
 - 提供 `/social_context` 查看当前会话状态。
 - 管理员可用 `/social_context_reset` 重置当前会话状态。
@@ -63,7 +63,7 @@ familiarity_message_gain      发言熟悉度增量，默认 0.4
 familiarity_poke_gain         戳一戳熟悉度增量，默认 0.8
 
 # ③ 正式回复注入
-reply_inject_enabled          正式回复模型注入，默认 true
+reply_inject_enabled          正式回复完整注入，默认 false（高级选项）
 inject_cd                     同会话注入间隔，默认 20 秒
 
 # ④ 自主判断与主动回复
@@ -88,7 +88,7 @@ state_path                    状态文件路径，留空用默认路径
 save_interval                 保存间隔，默认 60 秒
 
 # ⑧ 高级模板
-reply_prompt_template         正式回复注入模板，可编辑
+reply_prompt_template         正式回复完整注入模板，可编辑，仅开启 reply_inject_enabled 时使用
 judge_decision_prompt         发给判断模型的 Prompt，可编辑
 judge_prompt_template         判断模型上下文模板，可编辑
 ```
@@ -112,7 +112,7 @@ judge_prompt_template         判断模型上下文模板，可编辑
 
 这些信号只辅助判断模型决定“该不该插话”，不会直接触发回复，也不会进入正式回复模型的默认模板。
 
-此外，判断模型现在可以额外返回 `reply_style` 与 `reply_intent`，作为正式回复阶段的低优先级建议；主动触发会按会话消耗每小时/每日预算，避免 bot 在群里过度插话。可用 `/social_context judge_last` 或 `/social_context_judge_last` 查看最近一次判断结果。
+此外，判断模型现在可以额外返回 `reply_style` 与 `reply_intent`，作为自主触发正式回复时的极简低优先级建议；主动触发会按会话消耗每小时/每日预算，避免 bot 在群里过度插话。可用 `/social_context judge_last` 或 `/social_context_judge_last` 查看最近一次判断结果。完整正式回复注入默认关闭，通常让 bot 依据 AstrBot 自带上下文回答即可。
 
 ## 可用模板变量
 

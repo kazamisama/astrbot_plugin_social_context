@@ -469,10 +469,8 @@ class SocialContextPlugin(Star):
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, request):
-        """在 LLM 请求前注入群聊状态摘要。"""
+        """在 LLM 请求前按需注入群聊状态摘要或自主触发提示。"""
         if not self._cfg_bool("enabled", True):
-            return
-        if not self._reply_inject_enabled():
             return
         if not hasattr(request, "system_prompt"):
             return
@@ -484,17 +482,15 @@ class SocialContextPlugin(Star):
         scope = self._scope_id(event)
         group = self._get_group(scope)
         now = time.time()
-        inject_cd = self._cfg_float("inject_cd", 20.0, 0.0)
-        if now - group.last_injected_time < inject_cd:
-            return
 
-        group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
-        block = self.build_reply_prompt_block(scope, event)
-        if not block:
-            return
-
-        group.last_injected_time = now
-        request.system_prompt = (request.system_prompt or "").rstrip() + "\n\n" + block
+        if self._reply_inject_enabled():
+            inject_cd = self._cfg_float("inject_cd", 20.0, 0.0)
+            if now - group.last_injected_time >= inject_cd:
+                group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
+                block = self.build_reply_prompt_block(scope, event)
+                if block:
+                    group.last_injected_time = now
+                    request.system_prompt = (request.system_prompt or "").rstrip() + "\n\n" + block
 
         if event.get_extra("social_context_triggered"):
             style = str(event.get_extra("social_context_reply_style") or "short")
@@ -504,7 +500,7 @@ class SocialContextPlugin(Star):
                 f"建议回复风格：{style}；回复意图：{intent}。"
                 "回复应自然、简短，像普通群成员一样加入话题。）"
             )
-            request.system_prompt = request.system_prompt.rstrip() + "\n" + note
+            request.system_prompt = (request.system_prompt or "").rstrip() + "\n" + note
 
     @filter.command("social_context")
     async def social_context_status(self, event: AstrMessageEvent):
@@ -610,8 +606,8 @@ class SocialContextPlugin(Star):
     def _reply_inject_enabled(self) -> bool:
         """正式回复模型注入开关；保留 inject_enabled 作为旧配置兼容。"""
         if "reply_inject_enabled" in self.config:
-            return self._cfg_bool("reply_inject_enabled", True)
-        return self._cfg_bool("inject_enabled", True)
+            return self._cfg_bool("reply_inject_enabled", False)
+        return self._cfg_bool("inject_enabled", False)
 
     def _format_template(self, template: str, variables: dict[str, Any], fallback: str) -> str:
         """安全格式化用户可编辑 prompt 模板。

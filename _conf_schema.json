@@ -49,9 +49,9 @@
     },
     "reply_inject_enabled": {
         "description": "③ 正式回复注入 / 正式回复模型注入",
-        "hint": "开启后在正式 LLM 回复请求前追加低优先级群聊观察，影响“怎么说”，不影响“回不回”",
+        "hint": "高级选项。开启后在正式 LLM 回复请求前追加完整群聊观察，影响“怎么说”，不影响“回不回”。默认关闭：通常 AstrBot 已提供最近对话上下文，避免重复统计占用 prompt 或让回复变得不自然。自主触发时的极简风格/意图提示不受本项影响。",
         "type": "bool",
-        "default": true
+        "default": false
     },
     "inject_cd": {
         "description": "③ 正式回复注入 / 同会话注入间隔（秒）",
@@ -140,7 +140,7 @@
     },
     "reply_prompt_template": {
         "description": "⑧ 高级模板 / 正式回复注入模板",
-        "hint": "可编辑。用于正式 LLM 回复阶段。支持占位符：{window_seconds} {vibe} {message_count} {active_user_count} {recent_speakers} {poke_count} {latest_poke_sender} {latest_poke_target} {last_bot_reply_elapsed} {current_user_name} {current_user_id} {current_user_message_count_today} {current_user_poke_sent_today} {current_user_poke_received_today} {current_user_familiarity}。",
+        "hint": "高级选项，仅在 reply_inject_enabled=true 时使用。用于正式 LLM 回复阶段追加完整群聊观察。支持占位符：{window_seconds} {vibe} {message_count} {active_user_count} {recent_speakers} {poke_count} {latest_poke_sender} {latest_poke_target} {last_bot_reply_elapsed} {current_user_name} {current_user_id} {current_user_message_count_today} {current_user_poke_sent_today} {current_user_poke_received_today} {current_user_familiarity}。",
         "type": "text",
         "default": "[群聊状态观察 / 正式回复参考]\n最近{window_seconds}秒：{vibe}，{message_count}条消息，{active_user_count}人参与。\n最近较活跃的人：{recent_speakers}。\n窗口内有{poke_count}次戳一戳，最近一次：{latest_poke_sender} 戳了 {latest_poke_target}。\n你上次在这个群发言距今：{last_bot_reply_elapsed}。\n当前发言者：{current_user_name}({current_user_id})，今日消息{current_user_message_count_today}条，熟悉度约{current_user_familiarity}/100。\n这些只是低优先级观察：自然使用，不要复述统计，不要因为看到观察就强行解释。"
     },

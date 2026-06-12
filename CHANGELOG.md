@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.4 - 2026-06-12
+
+- 新增判断模型社交信号 `bot_relevance`：基于 bot 相关关键词、bot ID、近期 bot 发言等轻量启发式，估算当前消息与 bot/插件/模型/配置话题的相关度。
+- 新增判断模型社交信号 `conversation_opening`：基于提问/求助、bot 相关度、近期短对话、bot 刚发言等信号，估算当前时机是否存在自然插话空位。
+- 新增配置项 `bot_relevance_keywords`，用于自定义 bot 相关关键词，默认 `雪莉,bot,机器人,助手,插件,模型,配置`。
+- `judge_prompt_template` 默认模板加入 `bot_relevance` 与 `conversation_opening`，让判断模型更克制地决定是否主动回复。
+- README / `_conf_schema.json` / 回归测试同步更新。
+
 ## v0.4.3 - 2026-06-12
 
 - Prompt injection 扫描调整为判断模型专属：`<INJECTION_RISK>` 只进入判断模型 prompt，不再注入正式回复模型，降低回复阶段噪声。

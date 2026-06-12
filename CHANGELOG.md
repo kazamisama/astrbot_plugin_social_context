@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.9 - 2026-06-13
+
+- 将 `block_group_temp_private_notice` 默认值改为空字符串，群聊临时会话私聊拦截默认静默，只记录日志并 `stop_event()`。
+- 保留自定义拦截提示能力：管理员手动填写提示文本后，命中拦截时仍会返回该提示。
+- README / `_conf_schema.json` / 回归测试同步更新。
+
 ## v0.4.8 - 2026-06-12
 
 - 新增 `block_group_temp_private` 安全开关，默认拦截 aiocqhttp/OneBot 群聊临时会话私聊，避免陌生群成员绕过群内上下文直接私聊 bot。

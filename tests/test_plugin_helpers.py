@@ -228,6 +228,7 @@ class PluginHelperTests(unittest.TestCase):
         self.assertEqual(data["autonomous_reply_count_hour"], 1)
         self.assertEqual(data["autonomous_reply_hour"], "2026-06-12T22")
         self.assertEqual(data["last_judge_result"]["should_reply"], True)
+
     def test_group_temp_private_is_detected_from_onebot_raw(self) -> None:
         event = _Event(
             group_id="",
@@ -238,7 +239,7 @@ class PluginHelperTests(unittest.TestCase):
 
         self.assertTrue(self.plugin._is_group_temporary_private(event))  # type: ignore[arg-type]
 
-    def test_group_temp_private_guard_blocks_event(self) -> None:
+    def test_group_temp_private_guard_blocks_silently_by_default(self) -> None:
         event = _Event(
             group_id="",
             message_type="private",
@@ -249,7 +250,21 @@ class PluginHelperTests(unittest.TestCase):
         asyncio.run(self.plugin.block_group_temp_private(event))  # type: ignore[arg-type]
 
         self.assertTrue(event.stopped)
-        self.assertIn("安全防火墙拦截", event.result)
+        self.assertIsNone(event.result)
+
+    def test_group_temp_private_guard_can_send_custom_notice(self) -> None:
+        self.plugin.config = _Cfg({"block_group_temp_private_notice": "请回群里说"})
+        event = _Event(
+            group_id="",
+            message_type="private",
+            raw_message={"message_type": "private", "sub_type": "group", "sender": {"group_id": 42}},
+        )
+        event.unified_msg_origin = "private:10001"
+
+        asyncio.run(self.plugin.block_group_temp_private(event))  # type: ignore[arg-type]
+
+        self.assertTrue(event.stopped)
+        self.assertEqual("请回群里说", event.result)
 
     def test_group_temp_private_guard_allows_friend_private(self) -> None:
         event = _Event(

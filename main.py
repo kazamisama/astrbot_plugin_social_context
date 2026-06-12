@@ -316,13 +316,7 @@ class SocialContextPlugin(Star):
         if not self._is_group_temporary_private(event):
             return
 
-        notice = str(
-            self.config.get(
-                "block_group_temp_private_notice",
-                "请求已被安全防火墙拦截。若你认为这是误判，请在群内联系 Bot 管理者。",
-            )
-            or ""
-        ).strip()
+        notice = str(self.config.get("block_group_temp_private_notice", "") or "").strip()
         if notice:
             try:
                 event.set_result(event.plain_result(notice))

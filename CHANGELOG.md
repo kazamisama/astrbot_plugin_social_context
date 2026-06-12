@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.3 - 2026-06-12
+
+- Prompt injection 扫描调整为判断模型专属：`<INJECTION_RISK>` 只进入判断模型 prompt，不再注入正式回复模型，降低回复阶段噪声。
+- 新增 `prompt_security.py`，将扫描规则拆成纯函数模块，并避免已标记片段被重复包裹。
+- 隐藏 `_conf_schema.json` 中的旧兼容项 `inject_enabled`；代码仍保留旧配置读取兼容，新用户 WebUI 不再看到旧字段。
+- `_cfg_bool()` 增强字符串 bool 解析，避免 `"false"` / `"off"` / `"关闭"` 被 Python truthy 规则误判为开启。
+- 自主判断触发成功时立即写入冷却时间，避免正式回复回流前重复触发判断。
+- 持久化状态不再保存消息正文 `content`，降低落盘隐私风险；读取旧状态时保持兼容。
+- README / 配置说明同步更新：明确 prompt injection 扫描只作用于判断模型输入。
+- 新增 `tests/test_plugin_helpers.py`，覆盖 bool 解析、判断/正式回复扫描边界、消息正文不落盘等回归场景。
+
 ## v0.4.2 - 2026-06-12
 
 - 配置项 `judge_injection_scan_enabled` 改名为 `judge_prompt_injection_scan_enabled`，自解释更强、跟 `inject_enabled` / `reply_inject_enabled` 的"注入"双关明确划开。

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.8 - 2026-06-12
+
+- 新增 `block_group_temp_private` 安全开关，默认拦截 aiocqhttp/OneBot 群聊临时会话私聊，避免陌生群成员绕过群内上下文直接私聊 bot。
+- 新增 `block_group_temp_private_notice` 配置项，可自定义拦截提示；留空则静默拦截。
+- 新增高优先级 `PRIVATE_MESSAGE` 守卫，识别 `message_type=private` 且 `sub_type=group/group_self/temp`、携带 `group_id` 或 session 标记为临时会话的事件，并在命中后 `stop_event()`。
+- README / `_conf_schema.json` / 回归测试同步更新，确认普通好友私聊不受影响、关闭开关后不会拦截。
+
 ## v0.4.7 - 2026-06-12
 
 - 将完整正式回复模型注入 `reply_inject_enabled` 默认值改为 `false`，避免与 AstrBot 自带对话上下文重复、占用 prompt 或影响自然回复。

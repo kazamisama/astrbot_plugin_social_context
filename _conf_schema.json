@@ -120,6 +120,18 @@
         "type": "bool",
         "default": true
     },
+    "block_group_temp_private": {
+        "description": "⑥ 安全防护 / 拦截群聊临时会话私聊",
+        "hint": "开启后，aiocqhttp/OneBot 下会拦截由群聊入口发起的临时会话私聊，避免陌生群成员绕过群聊上下文直接私聊 bot。普通好友私聊不受影响。",
+        "type": "bool",
+        "default": true
+    },
+    "block_group_temp_private_notice": {
+        "description": "⑥ 安全防护 / 临时会话私聊拦截提示",
+        "hint": "命中群聊临时会话私聊拦截时返回的提示。留空则静默拦截。",
+        "type": "string",
+        "default": "请求已被安全防火墙拦截。若你认为这是误判，请在群内联系 Bot 管理者。"
+    },
     "persist_enabled": {
         "description": "⑦ 持久化 / 持久化状态",
         "hint": "开启后将状态保存为 JSON",

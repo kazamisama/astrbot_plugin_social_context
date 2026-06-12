@@ -250,6 +250,89 @@ class SocialContextPlugin(Star):
         except Exception:
             return str(event.get_sender_id())
 
+    @staticmethod
+    def _stringify(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @staticmethod
+    def _safe_call(func: Any, default: Any = "") -> Any:
+        try:
+            return func()
+        except Exception:
+            return default
+
+    def _raw_message(self, event: AstrMessageEvent) -> dict[str, Any]:
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        return raw if isinstance(raw, dict) else {}
+
+    def _is_private_event(self, event: AstrMessageEvent) -> bool:
+        try:
+            if event.is_private_chat():
+                return True
+        except Exception:
+            pass
+
+        group_id = self._stringify(self._safe_call(event.get_group_id))
+        if group_id:
+            return False
+
+        raw = self._raw_message(event)
+        if self._stringify(raw.get("message_type")).lower() == "private":
+            return True
+
+        message_type = self._stringify(self._safe_call(event.get_message_type)).lower()
+        return "friend" in message_type or "private" in message_type
+
+    def _is_group_temporary_private(self, event: AstrMessageEvent) -> bool:
+        """识别由群聊发起的临时会话私聊。"""
+        if not self._is_private_event(event):
+            return False
+
+        raw = self._raw_message(event)
+        sender = raw.get("sender", {}) if isinstance(raw.get("sender"), dict) else {}
+        sub_type = self._stringify(raw.get("sub_type")).lower()
+        raw_group_id = self._stringify(raw.get("group_id") or sender.get("group_id"))
+        session_id = self._stringify(getattr(event, "unified_msg_origin", "")) or self._stringify(
+            self._safe_call(event.get_session_id)
+        )
+
+        if raw_group_id:
+            return True
+        if sub_type in {"group", "group_self", "temp"}:
+            return True
+
+        lowered_session = session_id.lower()
+        return "temp" in lowered_session or "groupprivate" in lowered_session
+
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=100000)
+    async def block_group_temp_private(self, event: AstrMessageEvent):
+        """拦截群聊临时会话私聊，避免陌生群成员绕过群内上下文。"""
+        if not self._cfg_bool("enabled", True):
+            return
+        if not self._cfg_bool("block_group_temp_private", True):
+            return
+        if not self._is_group_temporary_private(event):
+            return
+
+        notice = str(
+            self.config.get(
+                "block_group_temp_private_notice",
+                "请求已被安全防火墙拦截。若你认为这是误判，请在群内联系 Bot 管理者。",
+            )
+            or ""
+        ).strip()
+        if notice:
+            try:
+                event.set_result(event.plain_result(notice))
+            except Exception as exc:
+                logger.debug(f"[social_context] 设置临时会话拦截提示失败: {exc}")
+        event.stop_event()
+        sender_id = self._stringify(self._safe_call(event.get_sender_id))
+        session_id = self._stringify(getattr(event, "unified_msg_origin", ""))
+        logger.warning(f"[social_context] 已拦截群聊临时会话私聊: sender={sender_id} session={session_id}")
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=900)
     async def on_group_message(self, event: AstrMessageEvent):
         """监听群消息，维护短期状态窗口。"""

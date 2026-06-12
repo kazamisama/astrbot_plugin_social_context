@@ -81,6 +81,8 @@ bot_relevance_keywords        bot 相关关键词，逗号分隔
 
 # ⑥ 安全防护
 judge_prompt_injection_scan_enabled  判断模型输入的 Prompt injection 扫描，默认 true
+block_group_temp_private             拦截群聊临时会话私聊，默认 true
+block_group_temp_private_notice      临时会话私聊拦截提示，留空则静默拦截
 
 # ⑦ 持久化
 persist_enabled               持久化状态，默认 true

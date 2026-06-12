@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import unittest
 from collections import deque
 from pathlib import Path
 
 _PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+_ASTRBOT_APP_CANDIDATES = [
+    Path(os.environ["ASTRBOT_APP_PATH"]) if os.environ.get("ASTRBOT_APP_PATH") else None,
+    Path(r"C:\application\AstrBot\backend\app"),
+]
+for _candidate in _ASTRBOT_APP_CANDIDATES:
+    if _candidate and _candidate.exists():
+        sys.path.insert(0, str(_candidate))
+        break
 sys.path.insert(0, str(_PLUGIN_ROOT))
 
 from main import GroupContext, MessageRecord, SocialContextPlugin, UserContext  # noqa: E402
@@ -27,6 +36,8 @@ class _Event:
         group_id: str = "group-1",
         message: str = "当前消息",
         extras: dict[str, object] | None = None,
+        raw_message: dict[str, object] | None = None,
+        message_type: str = "group",
     ) -> None:
         self.sender_name = sender_name
         self.sender_id = sender_id
@@ -34,6 +45,10 @@ class _Event:
         self.unified_msg_origin = group_id
         self.message_str = message
         self.extras = extras or {}
+        self.message_type = message_type
+        self.stopped = False
+        self.result = None
+        self.message_obj = type("MessageObj", (), {"raw_message": raw_message or {}})()
 
     def get_sender_name(self) -> str:
         return self.sender_name
@@ -44,8 +59,26 @@ class _Event:
     def get_group_id(self) -> str:
         return self.group_id
 
+    def get_message_type(self) -> str:
+        return self.message_type
+
+    def get_session_id(self) -> str:
+        return self.unified_msg_origin
+
+    def is_private_chat(self) -> bool:
+        return self.message_type == "private"
+
     def get_extra(self, key: str, default=None):  # noqa: ANN001, ANN201 - 测试假对象
         return self.extras.get(key, default)
+
+    def plain_result(self, text: str) -> str:
+        return text
+
+    def set_result(self, result: object) -> None:
+        self.result = result
+
+    def stop_event(self) -> None:
+        self.stopped = True
 
 
 class PluginHelperTests(unittest.TestCase):
@@ -195,6 +228,56 @@ class PluginHelperTests(unittest.TestCase):
         self.assertEqual(data["autonomous_reply_count_hour"], 1)
         self.assertEqual(data["autonomous_reply_hour"], "2026-06-12T22")
         self.assertEqual(data["last_judge_result"]["should_reply"], True)
+    def test_group_temp_private_is_detected_from_onebot_raw(self) -> None:
+        event = _Event(
+            group_id="",
+            message_type="private",
+            raw_message={"message_type": "private", "sub_type": "group", "sender": {"group_id": 42}},
+        )
+        event.unified_msg_origin = "private:10001"
+
+        self.assertTrue(self.plugin._is_group_temporary_private(event))  # type: ignore[arg-type]
+
+    def test_group_temp_private_guard_blocks_event(self) -> None:
+        event = _Event(
+            group_id="",
+            message_type="private",
+            raw_message={"message_type": "private", "sub_type": "group", "sender": {"group_id": 42}},
+        )
+        event.unified_msg_origin = "private:10001"
+
+        asyncio.run(self.plugin.block_group_temp_private(event))  # type: ignore[arg-type]
+
+        self.assertTrue(event.stopped)
+        self.assertIn("安全防火墙拦截", event.result)
+
+    def test_group_temp_private_guard_allows_friend_private(self) -> None:
+        event = _Event(
+            group_id="",
+            message_type="private",
+            raw_message={"message_type": "private", "sub_type": "friend"},
+        )
+        event.unified_msg_origin = "private:10001"
+
+        asyncio.run(self.plugin.block_group_temp_private(event))  # type: ignore[arg-type]
+
+        self.assertFalse(event.stopped)
+        self.assertIsNone(event.result)
+
+    def test_group_temp_private_guard_respects_config_switch(self) -> None:
+        self.plugin.config = _Cfg({"block_group_temp_private": False})
+        event = _Event(
+            group_id="",
+            message_type="private",
+            raw_message={"message_type": "private", "sub_type": "group", "sender": {"group_id": 42}},
+        )
+        event.unified_msg_origin = "private:10001"
+
+        asyncio.run(self.plugin.block_group_temp_private(event))  # type: ignore[arg-type]
+
+        self.assertFalse(event.stopped)
+        self.assertIsNone(event.result)
+
     def test_on_llm_request_keeps_trigger_note_when_reply_inject_disabled(self) -> None:
         class _Request:
             system_prompt = "base"

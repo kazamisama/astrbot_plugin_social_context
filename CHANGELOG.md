@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.2 - 2026-06-12
+
+- 配置项 `judge_injection_scan_enabled` 改名为 `judge_prompt_injection_scan_enabled`，自解释更强、跟 `inject_enabled` / `reply_inject_enabled` 的"注入"双关明确划开。
+- `_conf_schema.json` 同步改名 + description / hint 写清楚：标明本项是 **prompt injection 防护**（inbound），不是 **social context 注入**（outbound），方向相反。
+- `README.md` 新增对比表，说明 `inject_enabled` / `reply_inject_enabled` / `judge_prompt_injection_scan_enabled` 三者职责边界。
+- **迁移路径**：旧 key `judge_injection_scan_enabled` 不再被读取；默认值为 true，升级后行为不变（扫描保持开启）。如需关闭，请在 WebUI 中把新 key 设为 false。
+
 ## v0.4.1 - 2026-06-12
 
 - 新增数据层 Prompt 注入防护：对进入判断 / 正式回复 prompt 的用户可控字段（昵称、消息原文、戳一戳者）做正则扫描，命中片段用 `<INJECTION_RISK>…</INJECTION_RISK>` 包裹。

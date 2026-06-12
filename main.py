@@ -574,7 +574,7 @@ class SocialContextPlugin(Star):
 
         不会原地修改原 dict，方便调用方保留原始数据用于日志。
         """
-        if not self._cfg_bool("judge_injection_scan_enabled", True):
+        if not self._cfg_bool("judge_prompt_injection_scan_enabled", True):
             return variables
         scanned: dict[str, Any] = {}
         for key, value in variables.items():

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.1 - 2026-06-12
+
+- 新增数据层 Prompt 注入防护：对进入判断 / 正式回复 prompt 的用户可控字段（昵称、消息原文、戳一戳者）做正则扫描，命中片段用 `<INJECTION_RISK>…</INJECTION_RISK>` 包裹。
+- 新增 `_scan_injection_risk` 私有方法 + `_scan_variables` 辅助方法，覆盖中文/英文指令、角色伪装、chat template token、分隔符、高优先级标签等模式。
+- 在 `_judge_should_reply`、`build_judge_prompt_block`、`build_reply_prompt_block` 渲染前接入扫描；`judge_decision_prompt` / `judge_prompt_template` / `reply_prompt_template` 默认模板同步加 `<INJECTION_RISK>` 提示说明。
+- 新增 `judge_injection_scan_enabled` 配置项，默认 true；关闭后只保留模板里的提示词防御。
+- 移除未使用的孤儿 import `from astrbot.api.message_components import Plain`。
+
 ## v0.4.0 - 2026-06-09
 
 - 新增自主选择模型判断是否回复功能，可在配置中选择判断模型提供商。

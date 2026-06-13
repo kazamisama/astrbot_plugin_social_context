@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.2 - 2026-06-13
+
+- 新增判断模型人格感知（`judge_persona_aware_enabled`，v0.5.2+ 默认开启）：`_judge_should_reply` 在调用 `provider.text_chat` 时传入当前会话人格的 `system_prompt`，让判断模型以人格视角评估是否该插话（冷淡人格判断阈值偏保守、活泼人格偏积极等）。
+- 借鉴 `astrbot_plugin_private_proactive_reply` 的 `_get_system_prompt` 实现：优先 `conversation.persona_id` 拉取，降级到 `persona_manager.get_default_persona_v3(umo=umo)`，全部失败/异常返空串，不污染主流程。
+- 新增配置项 `judge_persona_prompt_max_chars`（默认 1500）：截断保护，超长 system_prompt 裁剪后补 `…`，避免撑爆 judge 小模型 context。
+- 新增配置项 `judge_persona_cache_ttl_seconds`（默认 300）：`umo -> (persona_id, system_prompt, fetched_at)` 轻量缓存，避免每条群消息都查 persona_manager。
+- `JudgeResult` 新增 `persona_id` 字段，`last_judge_result` 同步记录；`/social_context judge_last` 输出多一行 `persona_id` 方便调试。
+- README / `_conf_schema.json` / 回归测试同步更新，确认 judge 关闭开关、conversation 缺 persona_id、长 system_prompt 截断、缓存命中四种边界。
+
 ## v0.5.1 - 2026-06-13
 
 - 将 `judge_enabled` 默认值改为 `true`：插件默认启用"自主判断是否回复"功能，呼应 v0.4.0 起的自主判断能力。

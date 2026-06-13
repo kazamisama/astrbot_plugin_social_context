@@ -315,6 +315,153 @@ class PluginHelperTests(unittest.TestCase):
         self.assertNotIn("[群聊状态观察 / 正式回复参考]", request.system_prompt)
 
 
+class _FakePersona:
+    def __init__(self, system_prompt: str = "") -> None:
+        self.system_prompt = system_prompt
+
+
+class _FakeConversation:
+    def __init__(self, persona_id: str | None = None) -> None:
+        self.persona_id = persona_id
+
+
+class _FakeConversationManager:
+    def __init__(
+        self,
+        conversation: _FakeConversation | None = None,
+        conv_id: str | None = "conv-1",
+    ) -> None:
+        self._conversation = conversation
+        self._conv_id = conv_id
+
+    async def get_curr_conversation_id(self, umo: str) -> str | None:
+        return self._conv_id
+
+    async def get_conversation(self, umo: str, conv_id: str):
+        return self._conversation
+
+
+class _FakePersonaManager:
+    def __init__(
+        self,
+        personas: dict[str, _FakePersona] | None = None,
+        default: _FakePersona | None = None,
+    ) -> None:
+        self._personas = personas or {}
+        self._default = default
+
+    async def get_persona(self, persona_id: str):
+        return self._personas.get(persona_id)
+
+    async def get_default_persona_v3(self, umo: str = ""):
+        if self._default is None:
+            return {}
+        return {"prompt": self._default.system_prompt}
+
+
+class _FakeContext:
+    def __init__(self, conv_mgr=None, persona_mgr=None) -> None:
+        self.conversation_manager = conv_mgr
+        self.persona_manager = persona_mgr
+
+
+class JudgePersonaTests(unittest.TestCase):
+    """判断模型人格感知（v0.5.2+）回归测试。"""
+
+    def setUp(self) -> None:
+        self.plugin = SocialContextPlugin.__new__(SocialContextPlugin)
+        self.plugin.config = _Cfg({})
+        self.plugin.groups = {}
+        self.plugin.users = {}
+        self.plugin._persona_cache = {}
+
+    def _make_event(self, umo: str = "umo-1") -> _Event:
+        return _Event(group_id=umo)
+
+    def test_resolve_judge_persona_uses_conversation_persona(self) -> None:
+        persona = _FakePersona(system_prompt="我是橘雪莉，冷静克制。")
+        self.plugin.context = _FakeContext(
+            conv_mgr=_FakeConversationManager(
+                conversation=_FakeConversation(persona_id="shirley")
+            ),
+            persona_mgr=_FakePersonaManager(personas={"shirley": persona}),
+        )
+        pid, sp = asyncio.run(
+            self.plugin._resolve_judge_persona(self._make_event())
+        )
+        self.assertEqual(pid, "shirley")
+        self.assertEqual(sp, "我是橘雪莉，冷静克制。")
+
+    def test_resolve_judge_persona_disabled_returns_none(self) -> None:
+        self.plugin.config = _Cfg({"judge_persona_aware_enabled": False})
+        persona = _FakePersona(system_prompt="不应当被读到")
+        self.plugin.context = _FakeContext(
+            conv_mgr=_FakeConversationManager(
+                conversation=_FakeConversation(persona_id="x")
+            ),
+            persona_mgr=_FakePersonaManager(personas={"x": persona}),
+        )
+        pid, sp = asyncio.run(
+            self.plugin._resolve_judge_persona(self._make_event())
+        )
+        self.assertIsNone(pid)
+        self.assertIsNone(sp)
+
+    def test_resolve_judge_persona_falls_back_to_default(self) -> None:
+        default = _FakePersona(system_prompt="默认人格设定")
+        self.plugin.context = _FakeContext(
+            conv_mgr=_FakeConversationManager(
+                conversation=_FakeConversation(persona_id=None)
+            ),
+            persona_mgr=_FakePersonaManager(default=default),
+        )
+        pid, sp = asyncio.run(
+            self.plugin._resolve_judge_persona(self._make_event())
+        )
+        self.assertEqual(pid, "default")
+        self.assertEqual(sp, "默认人格设定")
+
+    def test_resolve_judge_persona_truncates_long_prompt(self) -> None:
+        long_prompt = "X" * 5000
+        persona = _FakePersona(system_prompt=long_prompt)
+        self.plugin.config = _Cfg({"judge_persona_prompt_max_chars": 100})
+        self.plugin.context = _FakeContext(
+            conv_mgr=_FakeConversationManager(
+                conversation=_FakeConversation(persona_id="p")
+            ),
+            persona_mgr=_FakePersonaManager(personas={"p": persona}),
+        )
+        pid, sp = asyncio.run(
+            self.plugin._resolve_judge_persona(self._make_event())
+        )
+        self.assertEqual(pid, "p")
+        self.assertIsNotNone(sp)
+        self.assertLessEqual(len(sp), 101)  # 100 + "…"
+        self.assertTrue(sp.endswith("…"))
+
+    def test_resolve_judge_persona_cache_hits(self) -> None:
+        call_count = {"get_persona": 0}
+
+        class _CountingPersonaManager:
+            async def get_persona(self, persona_id: str):
+                call_count["get_persona"] += 1
+                return _FakePersona(system_prompt="cached-prompt")
+
+            async def get_default_persona_v3(self, umo: str = ""):
+                return {}
+
+        self.plugin.context = _FakeContext(
+            conv_mgr=_FakeConversationManager(
+                conversation=_FakeConversation(persona_id="p")
+            ),
+            persona_mgr=_CountingPersonaManager(),
+        )
+        ev = self._make_event()
+        asyncio.run(self.plugin._resolve_judge_persona(ev))
+        asyncio.run(self.plugin._resolve_judge_persona(ev))
+        self.assertEqual(call_count["get_persona"], 1)
+
+
 class ReplyStepTests(unittest.TestCase):
     """output_step.reply 智能引用纯函数测试。"""
 

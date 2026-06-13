@@ -94,6 +94,9 @@ judge_min_reply_interval      同会话主动回复最小间隔，默认 60 秒
 autonomous_reply_budget_per_hour  每小时主动回复预算，默认 3
 autonomous_reply_budget_per_day   每日主动回复预算，默认 20
 judge_max_retries             判断 JSON 解析失败重试次数，默认 1
+judge_persona_aware_enabled   判断模型人格感知（v0.5.2+），默认 true；让 judge 以当前人格视角判断是否该插话
+judge_persona_prompt_max_chars  判断模型人格提示词最大字符数，默认 1500；超长 system_prompt 截断保护
+judge_persona_cache_ttl_seconds  人格拉取缓存 TTL（秒），默认 300；避免每条群消息都查 persona_manager
 
 # ⑤ 判断上下文信号
 judge_context_max_age         判断模型上下文最大年龄，默认 180 秒
@@ -133,6 +136,8 @@ judge_prompt_template         判断模型上下文模板，可编辑
 - `conversation_opening`：当前时机是否存在适合自然插话的社交空位，取值 `none / low / medium / high`。
 
 这些信号只辅助判断模型决定“该不该插话”，不会直接触发回复，也不会进入正式回复模型的默认模板。
+
+v0.5.2 起判断模型还会收到**当前会话人格的 system_prompt** 作为底层 persona。借鉴自 `astrbot_plugin_private_proactive_reply` 的 `_get_system_prompt`：优先 `conversation.persona_id` → 降级 `persona_manager.get_default_persona_v3(umo)`，全失败/异常返空串。这样冷淡人格的判断模型对“该不该插话”会偏保守、活泼人格偏积极，跟正式回复阶段的人设保持一致。`/social_context judge_last` 输出会多一行 `persona_id` 方便排查。
 
 此外，判断模型现在可以额外返回 `reply_style` 与 `reply_intent`，作为自主触发正式回复时的极简低优先级建议；主动触发会按会话消耗每小时/每日预算，避免 bot 在群里过度插话。可用 `/social_context judge_last` 或 `/social_context_judge_last` 查看最近一次判断结果。完整正式回复注入默认关闭，通常让 bot 依据 AstrBot 自带上下文回答即可。
 

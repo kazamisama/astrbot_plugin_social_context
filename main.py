@@ -60,6 +60,7 @@ class JudgeResult:
     reasoning: str = ""
     reply_style: str = "short"
     reply_intent: str = "join_topic"
+    persona_id: str = ""
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -189,10 +190,90 @@ class SocialContextPlugin(Star):
         self.groups: dict[str, GroupContext] = {}
         self.users: dict[str, UserContext] = {}
         self._last_save_time = 0.0
+        # persona 拉取缓存：umo -> (persona_id, system_prompt, fetched_at)
+        self._persona_cache: dict[str, tuple[str | None, str | None, float]] = {}
 
         self.data_dir = self._resolve_data_dir()
         self.state_path = self._resolve_state_path()
         self._load_state()
+
+    async def _resolve_judge_persona(
+        self, event: AstrMessageEvent
+    ) -> tuple[str | None, str | None]:
+        """解析判断模型要用的人格上下文（persona_id, system_prompt）。
+
+        参考 astrbot_plugin_private_proactive_reply 的 _get_system_prompt 实现：
+          1. 优先用 conversation.persona_id 拉 system_prompt
+          2. 降级用 persona_manager.get_default_persona_v3(umo)
+          3. 全部失败/异常返 (None, None)，不抛
+        增加轻量缓存避免每次群消息都查库。
+        """
+        if not self._cfg_bool("judge_persona_aware_enabled", True):
+            return None, None
+
+        umo = ""
+        try:
+            umo = str(getattr(event, "unified_msg_origin", "") or "")
+        except Exception:
+            umo = ""
+        if not umo:
+            return None, None
+
+        ttl = self._cfg_int("judge_persona_cache_ttl_seconds", 300, 0)
+        now = time.time()
+        cached = self._persona_cache.get(umo)
+        if cached is not None:
+            pid, sp, fetched_at = cached
+            if ttl <= 0 or now - fetched_at < ttl:
+                return pid, sp
+            self._persona_cache.pop(umo, None)
+
+        persona_id: str | None = None
+        system_prompt: str | None = None
+        context_mgr = getattr(self.context, "conversation_manager", None)
+        persona_mgr = getattr(self.context, "persona_manager", None)
+        if context_mgr is not None and persona_mgr is not None:
+            try:
+                conv_id = await context_mgr.get_curr_conversation_id(umo)
+                conversation = None
+                if conv_id:
+                    conversation = await context_mgr.get_conversation(umo, conv_id)
+                conv_persona_id = (
+                    getattr(conversation, "persona_id", None) if conversation else None
+                )
+                if conv_persona_id and conv_persona_id != "[%None]":
+                    try:
+                        persona = await persona_mgr.get_persona(conv_persona_id)
+                        if persona and getattr(persona, "system_prompt", None):
+                            persona_id = str(conv_persona_id)
+                            system_prompt = str(persona.system_prompt)
+                    except Exception as exc:
+                        logger.debug(
+                            f"[social_context] 拉取会话人格失败，回退默认: {exc}"
+                        )
+                if system_prompt is None:
+                    try:
+                        default_persona = await persona_mgr.get_default_persona_v3(umo=umo)
+                        if isinstance(default_persona, dict):
+                            default_prompt = default_persona.get("prompt")
+                            if default_prompt:
+                                persona_id = "default"
+                                system_prompt = str(default_prompt)
+                    except Exception as exc:
+                        logger.debug(
+                            f"[social_context] 拉取默认人格失败: {exc}"
+                        )
+            except Exception as exc:
+                logger.debug(f"[social_context] 解析人格上下文失败: {exc}")
+
+        # 截断保护，避免超长 system_prompt 撑爆 judge context
+        if system_prompt:
+            max_chars = self._cfg_int("judge_persona_prompt_max_chars", 1500, 100)
+            if len(system_prompt) > max_chars:
+                system_prompt = system_prompt[:max_chars].rstrip() + "…"
+
+        self._persona_cache[umo] = (persona_id, system_prompt, now)
+        return persona_id, system_prompt
 
     def _cfg_bool(self, key: str, default: bool) -> bool:
         value = self.config.get(key, default)
@@ -462,14 +543,14 @@ class SocialContextPlugin(Star):
 
         result = await self._judge_should_reply(event, scope)
         if not result.should_reply:
-            self._record_last_judge(scope, result, triggered=False)
+            self._record_last_judge(scope, result, triggered=False, persona_id=result.persona_id)
             logger.debug(
                 f"[social_context] 自主判断不回复 | confidence={result.confidence:.2f} | {result.reasoning[:80]}"
             )
             return
 
         self._consume_autonomous_reply_budget(group, now)
-        self._record_last_judge(scope, result, triggered=True)
+        self._record_last_judge(scope, result, triggered=True, persona_id=result.persona_id)
         group.last_bot_reply_time = now
         event.is_at_or_wake_command = True
         event.set_extra("social_context_triggered", True)
@@ -493,6 +574,8 @@ class SocialContextPlugin(Star):
             return JudgeResult(reasoning=f"获取 provider 失败: {exc}")
         if not provider:
             return JudgeResult(reasoning=f"provider 不存在: {provider_id}")
+
+        persona_id, persona_system_prompt = await self._resolve_judge_persona(event)
 
         context_block = self.build_judge_prompt_block(scope, event)
         if not context_block:
@@ -521,7 +604,12 @@ class SocialContextPlugin(Star):
         content = ""
         for attempt in range(max_retries + 1):
             try:
-                response = await provider.text_chat(prompt=prompt, contexts=[], image_urls=[])
+                response = await provider.text_chat(
+                    prompt=prompt,
+                    contexts=[],
+                    image_urls=[],
+                    system_prompt=persona_system_prompt or "",
+                )
                 content = (getattr(response, "completion_text", "") or "").strip()
                 data = _extract_json(content)
                 confidence = _clamp_01(data.get("confidence", 0.0))
@@ -532,6 +620,7 @@ class SocialContextPlugin(Star):
                     reasoning=str(data.get("reasoning", "")),
                     reply_style=str(data.get("reply_style", "short") or "short"),
                     reply_intent=str(data.get("reply_intent", "join_topic") or "join_topic"),
+                    persona_id=persona_id or "",
                 )
             except Exception as exc:
                 logger.warning(
@@ -713,6 +802,7 @@ class SocialContextPlugin(Star):
             f"- confidence: {data.get('confidence', 0.0)}\n"
             f"- reply_style: {data.get('reply_style', '')}\n"
             f"- reply_intent: {data.get('reply_intent', '')}\n"
+            f"- persona_id: {data.get('persona_id', '') or '(无)'}\n"
             f"- reason: {data.get('reasoning', '')}\n"
             f"- time: {data.get('time', '')}"
         )
@@ -741,7 +831,7 @@ class SocialContextPlugin(Star):
             group.autonomous_reply_count_today += 1
         return True
 
-    def _record_last_judge(self, scope: str, result: JudgeResult, *, triggered: bool) -> None:
+    def _record_last_judge(self, scope: str, result: JudgeResult, *, triggered: bool, persona_id: str | None = None) -> None:
         """记录最近一次自主判断，供调试命令查看。"""
         group = self._get_group(scope)
         group.last_judge_result = {
@@ -752,6 +842,7 @@ class SocialContextPlugin(Star):
             "reasoning": result.reasoning,
             "reply_style": result.reply_style,
             "reply_intent": result.reply_intent,
+            "persona_id": persona_id or "",
         }
 
     @filter.permission_type(filter.PermissionType.ADMIN)

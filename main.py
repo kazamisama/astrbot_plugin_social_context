@@ -221,6 +221,8 @@ class SocialContextPlugin(Star):
         self._tier3_task: asyncio.Task | None = None
         # v0.6.2+：warning 去重（key -> last warn timestamp）；同 key 60s 内只 warn 一次
         self._compress_warn_last: dict[str, float] = {}
+        # v0.6.3+：过期摘要定时清理循环
+        self._stale_prune_task: asyncio.Task | None = None
 
         self.data_dir = self._resolve_data_dir()
         self.state_path = self._resolve_state_path()
@@ -828,6 +830,61 @@ class SocialContextPlugin(Star):
             # 无事件循环或已关闭
             pass
 
+    # ===== v0.6.3+：过期摘要定时清理（专治「静默群摘要僵在内存」）=====
+
+    def _stale_prune_interval(self) -> int:
+        """v0.6.3+：过期清理循环的执行间隔。
+
+        - 默认 discard_age=86400 → 间隔 1h（clamp 到 3600）
+        - 用户配 600（10min）→ 间隔 1min（clamp 下限 60）
+        - 用户配 604800（一周）→ 间隔 1h（不会慢到 42h 才清）
+        """
+        discard = self._cfg_int("history_discard_age", 86400, 1)
+        return max(60, min(discard // 4, 3600))
+
+    async def _stale_history_prune_loop(self) -> None:
+        """v0.6.3+：定时清理过期摘要 + force save。
+
+        之前 `_prune_stale_history` 只在 load / save / 注入 prompt 前跑——
+        完全静默的群，摘要过期后会一直留在内存和 JSON 里。
+        这个循环兜底：每隔一段时间扫一次全群，把过期的清掉。
+        """
+        while True:
+            try:
+                interval = self._stale_prune_interval()
+                await asyncio.sleep(interval)
+                if not self._cfg_bool("persist_enabled", True):
+                    continue
+                now = time.time()
+                pruned = 0
+                for group in self.groups.values():
+                    before_t2 = bool(group.history_summary)
+                    before_t3 = bool(group.history_daily_summary)
+                    self._prune_stale_history(group, now)
+                    after_t2 = bool(group.history_summary)
+                    after_t3 = bool(group.history_daily_summary)
+                    if (before_t2, before_t3) != (after_t2, after_t3):
+                        pruned += 1
+                if pruned > 0:
+                    # 内存清掉后立刻 force save，把清掉的结果同步到磁盘
+                    self._save_if_needed(force=True)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                if self._should_warn("stale_prune_loop"):
+                    logger.warning(f"[social_context] 过期摘要清理循环异常: {exc}")
+                await asyncio.sleep(60)
+                continue
+
+    def _ensure_stale_prune_loop(self) -> None:
+        """懒启动过期清理循环。在 on_group_message 里调用。"""
+        if self._stale_prune_task is not None and not self._stale_prune_task.done():
+            return
+        try:
+            self._stale_prune_task = asyncio.create_task(self._stale_history_prune_loop())
+        except RuntimeError:
+            pass
+
     async def _tier3_compress_loop(self) -> None:
         """D 方案 tier3 循环：定时遍历所有群。
 
@@ -975,6 +1032,8 @@ class SocialContextPlugin(Star):
         # v0.6.1+：D 方案触发点——on-message 后看是否要压 tier2 / 启动 tier3 后台
         self._ensure_tier3_loop()
         self._maybe_schedule_tier2_compress(group_id)
+        # v0.6.3+：懒启动过期摘要清理循环（独立于 compress 循环）
+        self._ensure_stale_prune_loop()
 
         if not is_bot:
             await self._maybe_trigger_autonomous_reply(event, group_id)
@@ -1887,6 +1946,13 @@ class SocialContextPlugin(Star):
             self._tier3_task.cancel()
             try:
                 await self._tier3_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        # v0.6.3+：取消过期清理循环
+        if self._stale_prune_task is not None and not self._stale_prune_task.done():
+            self._stale_prune_task.cancel()
+            try:
+                await self._stale_prune_task
             except (asyncio.CancelledError, Exception):
                 pass
         for task in list(self._compress_tasks):

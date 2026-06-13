@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.6.3 - 2026-06-13
+
+- **补丁：持久化过期摘要定时清理**——之前 `_prune_stale_history` 只在 load / save / 注入 prompt 前跑，完全静默群的过期摘要会一直留在内存和 JSON 里。
+- 新增 `self._stale_prune_task: asyncio.Task | None`（`__init__` 初始化）。
+- 新增方法：
+  - `_stale_prune_interval()` → 返回循环间隔：默认 `min(discard_age/4, 3600)`，clamp 下限 60s
+  - `_stale_history_prune_loop()` → 定时遍历全群调 `_prune_stale_history`，清掉过期项后 `force=True` 写盘
+  - `_ensure_stale_prune_loop()` → 懒启动（on_group_message 调一次）
+- `on_group_message` 在 `_ensure_tier3_loop` + `_maybe_schedule_tier2_compress` 之后调 `_ensure_stale_prune_loop`。
+- `terminate` 在 cancel tier3 之后多 cancel `_stale_prune_task`。
+- 异常自愈模式跟 v0.6.2 tier3 同款：外层 `while True: try/except`，非 CancelledError 时 sleep 60s 继续循环；warn 走 `stale_prune_loop` key 去重。
+- 间隔计算示例：
+  - discard=86400 (1 天) → 间隔 3600 (1 小时)
+  - discard=600 (10 分钟) → 间隔 60 (1 分钟)
+  - discard=604800 (1 周) → 间隔 3600 (1 小时，clamp 上限)
+- 新增 3 个单测：间隔 clamp / 静默群过期清理 / 未过期不动。
+- metadata.yaml v0.6.2 → v0.6.3。
+
 ## v0.6.2 - 2026-06-13
 
 - **补丁：失败兜底强化**（v0.6.1 暴露的 3 个小坑一次性收口）。

@@ -729,6 +729,82 @@ class PluginHelperTests(unittest.TestCase):
                 pass
         self.assertGreaterEqual(sleep_calls["n"], 2)  # 至少跑了 2 次 sleep
 
+    # ===== v0.6.3+：过期摘要定时清理 测试 =====
+
+    def test_stale_prune_interval_clamping(self) -> None:
+        """v0.6.3+：间隔按 discard_age 推导，下限 60s，上限 3600s"""
+        # 默认 86400 → 86400/4=21600 clamp 到 3600
+        self.plugin.config = _Cfg({"history_discard_age": 86400})
+        self.assertEqual(self.plugin._stale_prune_interval(), 3600)
+        # 配很短（10min）→ 150 clamp 下限 60
+        self.plugin.config = _Cfg({"history_discard_age": 600})
+        self.assertEqual(self.plugin._stale_prune_interval(), 60)
+        # 配很长（一周）→ 151200 clamp 上限 3600
+        self.plugin.config = _Cfg({"history_discard_age": 604800})
+        self.assertEqual(self.plugin._stale_prune_interval(), 3600)
+
+    def test_stale_prune_loop_clears_silent_groups(self) -> None:
+        """v0.6.3+：定时循环把静默群的过期摘要清掉
+
+        模拟：sleep 让它跑到第二次就被 cancel，
+        第一次跑完应该已经把过期摘要清空。
+        """
+        import asyncio as _aio
+        now = __import__("time").time()
+        # 静默群：摘要 2 天前更新过（必过期）
+        self.plugin.groups["silent-1"] = GroupContext(
+            history_summary="过期摘要",
+            history_summary_updated=now - 86400 * 2,
+            history_daily_summary="更早过期",
+            history_daily_updated=now - 86400 * 3,
+        )
+
+        sleep_calls = {"n": 0}
+
+        async def _mock_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 1:
+                raise _aio.CancelledError()
+
+        # 强制关掉 save 避免污染测试环境
+        self.plugin._save_if_needed = lambda force=False: None  # type: ignore[assignment]
+        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+            try:
+                _aio.run(self.plugin._stale_history_prune_loop())
+            except _aio.CancelledError:
+                pass
+
+        g = self.plugin.groups["silent-1"]
+        self.assertEqual(g.history_summary, "")
+        self.assertEqual(g.history_daily_summary, "")
+        self.assertEqual(g.history_summary_updated, 0.0)
+        self.assertEqual(g.history_daily_updated, 0.0)
+
+    def test_stale_prune_loop_keeps_fresh(self) -> None:
+        """v0.6.3+：未过期的摘要不动"""
+        import asyncio as _aio
+        now = __import__("time").time()
+        self.plugin.groups["active-1"] = GroupContext(
+            history_summary="新鲜摘要",
+            history_summary_updated=now - 60,  # 1min 前
+            history_daily_summary="",
+            history_daily_updated=0.0,
+        )
+
+        async def _mock_sleep(_):
+            raise _aio.CancelledError()
+
+        self.plugin._save_if_needed = lambda force=False: None  # type: ignore[assignment]
+        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+            try:
+                _aio.run(self.plugin._stale_history_prune_loop())
+            except _aio.CancelledError:
+                pass
+
+        g = self.plugin.groups["active-1"]
+        self.assertEqual(g.history_summary, "新鲜摘要")
+        self.assertEqual(g.history_summary_updated, now - 60)
+
     def test_topic_heat_trend_rising(self) -> None:
         messages = [
             MessageRecord("10001", "alice", "旧消息", 20.0, False),

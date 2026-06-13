@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.7.0 - 2026-06-13
+
+- **特性：整合「群成员查询」插件能力**——把独立的 `astrbot_plugin_group_member`（原作者糯米茨，魔改 v0.2.0-magic）功能整体并入 social_context，新增按需主动查询群成员名册的能力。social_context 此前只感知「说过话的人」，整合后可主动获取「群里所有人」。
+- 新增 LLM 工具 `@filter.llm_tool get_group_members_info(name_hint: str = "")`：
+  - 返回 `current_sender`（当前发信人，零 API 调用，直接读 `raw_message.sender`）+ `members`（群成员列表）+ `member_count` / `truncated` / `source`。
+  - `name_hint` 传 `self`/`我`/`me` 零成本命中当前发信人；传名字片段缩小范围；留空返回全量（带截断）。
+  - 四级路径：self 查询 → name_hint 命中发信人 → 缓存 → 调 API，越靠前越省。
+- 新增辅助方法：`_extract_current_sender` / `_format_members` / `_filter_members` / `_member_cache_get` / `_member_cache_set` / `_fetch_group_members` / `_members_json`。
+- `UserContext` 新增 `role: str = "member"` 字段：`on_group_message` 从事件 `sender.role` 零成本更新群内身份（owner/admin/member），可供 judge 逻辑判断发言权重。
+- `__init__` 新增 `self._member_cache`，`terminate` 清理。
+- 新增 2 个配置项（⑨ 群成员查询分组）：
+  - `member_cache_ttl`（int, 默认 30）：群成员名册缓存秒数，0=禁用。
+  - `member_truncate_threshold`（int, 默认 500）：LLM 工具返回成员上限，超过截断并标记 `truncated=true`。
+- 输出 JSON 用紧凑格式（`separators=(",",":")`），省 token。错误路径日志用 `error`+`exc_info`。
+- 回归验证：改动前后测试均为 14 failed / 77 passed（14 个失败为历史遗留 `unittest.mock` 写法问题，与本次整合无关）；新增 role 字段不影响 UserContext 序列化。
+- metadata.yaml v0.6.4 → v0.7.0。
+- 独立插件 `astrbot_plugin_group_member` 整合后可下线（功能已并入本插件）。
+
 ## v0.6.4 - 2026-06-13
 
 - **补丁：v0.6.3 清理循环补强**——加 `stale_prune_acted` info log（v0.6.4 之前没加，循环每天最多产生 ~24 条 info 噪音）；新增 2 个单测。

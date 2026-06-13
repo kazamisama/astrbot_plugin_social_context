@@ -195,6 +195,8 @@ class UserContext:
     last_poke_time: float = 0.0
     familiarity: float = 0.0
     last_reset_date: str = ""
+    # v0.7.0+：群内身份（owner/admin/member），由群消息事件零成本更新
+    role: str = "member"
 
     def reset_daily_if_needed(self) -> None:
         today = date.today().isoformat()
@@ -223,6 +225,8 @@ class SocialContextPlugin(Star):
         self._compress_warn_last: dict[str, float] = {}
         # v0.6.3+：过期摘要定时清理循环
         self._stale_prune_task: asyncio.Task | None = None
+        # v0.7.0+：群成员名册内存缓存 group_id -> (timestamp, members_list, truncated)
+        self._member_cache: dict[str, tuple[float, list, bool]] = {}
 
         self.data_dir = self._resolve_data_dir()
         self.state_path = self._resolve_state_path()
@@ -381,6 +385,207 @@ class SocialContextPlugin(Star):
             return event.get_sender_name() or str(event.get_sender_id())
         except Exception:
             return str(event.get_sender_id())
+
+    # ============ v0.7.0+：群成员查询（整合自 群成员查询 插件）============
+
+    # 触发"获取当前发信人"的关键字
+    _SELF_HINTS = frozenset(
+        {"self", "me", "myself", "i", "0", "我", "我自己", "自己", "本人", "在下"}
+    )
+
+    def _extract_current_sender(self, event: AstrMessageEvent) -> dict[str, Any] | None:
+        """从消息事件零成本提取当前发信人（不调 API）。"""
+        raw = self._raw_message(event)
+        sender = raw.get("sender")
+        if isinstance(sender, dict) and sender.get("user_id") is not None:
+            uid = sender.get("user_id")
+            return {
+                "user_id": str(uid),
+                "display_name": (
+                    sender.get("card") or sender.get("nickname") or f"用户{uid}"
+                ),
+                "username": sender.get("nickname") or f"用户{uid}",
+                "role": sender.get("role", "member"),
+            }
+        return None
+
+    @staticmethod
+    def _format_members(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out = []
+        for m in members:
+            uid = m.get("user_id")
+            if uid is None:
+                continue
+            out.append(
+                {
+                    "user_id": str(uid),
+                    "display_name": m.get("card") or m.get("nickname") or f"用户{uid}",
+                    "username": m.get("nickname") or f"用户{uid}",
+                    "role": m.get("role", "member"),
+                }
+            )
+        return out
+
+    @staticmethod
+    def _filter_members(members: list[dict[str, Any]], hint: str) -> list[dict[str, Any]]:
+        h = (hint or "").strip().lower()
+        if not h:
+            return members
+        return [
+            m
+            for m in members
+            if h in (m.get("display_name") or "").lower()
+            or h in (m.get("username") or "").lower()
+            or h == (m.get("user_id") or "").lower()
+        ]
+
+    def _member_cache_get(self, group_id: str):
+        ttl = self._cfg_int("member_cache_ttl", 30, 0)
+        if ttl <= 0:
+            return None
+        hit = self._member_cache.get(group_id)
+        if not hit:
+            return None
+        ts, members, truncated = hit
+        if time.time() - ts > ttl:
+            self._member_cache.pop(group_id, None)
+            return None
+        return members, truncated
+
+    def _member_cache_set(self, group_id: str, members: list, truncated: bool) -> None:
+        if self._cfg_int("member_cache_ttl", 30, 0) <= 0:
+            return
+        self._member_cache[group_id] = (time.time(), members, truncated)
+
+    async def _fetch_group_members(
+        self, event: AiocqhttpMessageEvent
+    ) -> list[dict[str, Any]] | None:
+        try:
+            group_id = event.get_group_id()
+            if not group_id:
+                return None
+            return await event.bot.api.call_action(
+                "get_group_member_list", group_id=group_id
+            )
+        except Exception as exc:
+            logger.error(
+                f"[social_context] get_group_member_list 调用失败: {exc}",
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _members_json(payload: dict[str, Any]) -> str:
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    @filter.llm_tool(name="get_group_members_info")
+    async def get_group_members_info(
+        self,
+        event: AstrMessageEvent,
+        name_hint: str = "",
+    ):
+        """获取QQ群成员信息（群昵称、QQ名、QQ号、群内身份）。
+
+        返回结构：
+        - current_sender：当前发信人（从事件直接读取，零 API 调用）
+        - members：群成员列表（超过阈值会截断）
+        - member_count / truncated / source
+
+        当用户问"我是谁"/"我的群昵称"时零成本命中；问特定成员（"XXX在群里吗"）
+        可传 name_hint 缩小范围；问"群里有哪些人"留空 name_hint 即可。
+        其中 display_name 是"群昵称"，username 是"QQ名"。
+
+        Args:
+            name_hint(string): 成员名/QQ号过滤提示。传 "self"/"我"/"me" 快速获取当前发信人（零 API 调用）；传名字片段缩小返回范围；留空返回全量（带截断）。
+        """
+        group_id = event.get_group_id()
+        if not group_id:
+            return self._members_json({"error": "这不是群聊"})
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return self._members_json(
+                {"error": f"此功能仅支持QQ群聊(aiocqhttp平台)，当前平台为 {event.get_platform_name()}"}
+            )
+
+        truncate_threshold = self._cfg_int("member_truncate_threshold", 500, 1)
+        current_sender = self._extract_current_sender(event)
+        hint = (name_hint or "").strip()
+
+        # 情形 1：self 查询（零 API）
+        if hint.lower() in self._SELF_HINTS:
+            if current_sender:
+                return self._members_json(
+                    {
+                        "group_id": group_id,
+                        "current_sender": current_sender,
+                        "members": [current_sender],
+                        "member_count": 1,
+                        "truncated": False,
+                        "source": "event_sender",
+                    }
+                )
+            return self._members_json({"error": "无法从事件中提取当前发信人信息"})
+
+        # 情形 2：name_hint 命中当前发信人（零 API）
+        if hint and current_sender:
+            h = hint.lower()
+            if (
+                h in (current_sender.get("display_name") or "").lower()
+                or h in (current_sender.get("username") or "").lower()
+                or h == (current_sender.get("user_id") or "").lower()
+            ):
+                return self._members_json(
+                    {
+                        "group_id": group_id,
+                        "current_sender": current_sender,
+                        "members": [current_sender],
+                        "member_count": 1,
+                        "truncated": False,
+                        "source": "event_sender_match",
+                    }
+                )
+
+        # 情形 3：缓存
+        cached = self._member_cache_get(group_id)
+        if cached is not None:
+            members_raw, truncated = cached
+            members = self._format_members(members_raw)
+            if hint:
+                members = self._filter_members(members, hint)
+            return self._members_json(
+                {
+                    "group_id": group_id,
+                    "current_sender": current_sender,
+                    "members": members,
+                    "member_count": len(members),
+                    "truncated": truncated and not hint,
+                    "source": "cache",
+                }
+            )
+
+        # 情形 4：调 API
+        raw_members = await self._fetch_group_members(event)
+        if not raw_members:
+            return self._members_json(
+                {"error": "获取群成员信息失败，可能是权限不足或网络问题"}
+            )
+
+        truncated = len(raw_members) > truncate_threshold
+        kept = raw_members[:truncate_threshold] if truncated else raw_members
+        self._member_cache_set(group_id, kept, truncated)
+
+        members = self._format_members(kept)
+        if hint:
+            members = self._filter_members(members, hint)
+        return self._members_json(
+            {
+                "group_id": group_id,
+                "current_sender": current_sender,
+                "members": members,
+                "member_count": len(members),
+                "truncated": truncated and not hint,
+                "source": "api",
+            }
+        )
 
     @staticmethod
     def _stringify(value: Any) -> str:
@@ -1030,6 +1235,10 @@ class SocialContextPlugin(Star):
             user.message_count_today += 1
             user.last_message_time = now
             user.familiarity = min(100.0, user.familiarity + self._cfg_float("familiarity_message_gain", 0.4, 0.0))
+            # v0.7.0+：从事件 sender 零成本更新群内身份
+            sender_role = self._raw_message(event).get("sender", {}).get("role")
+            if sender_role in ("owner", "admin", "member"):
+                user.role = sender_role
 
         group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
         self._save_if_needed()
@@ -1964,4 +2173,6 @@ class SocialContextPlugin(Star):
             if not task.done():
                 task.cancel()
         self._compress_tasks.clear()
+        # v0.7.0+：清理群成员名册缓存
+        self._member_cache.clear()
         self._save_if_needed(force=True)

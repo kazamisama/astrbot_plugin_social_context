@@ -805,6 +805,75 @@ class PluginHelperTests(unittest.TestCase):
         self.assertEqual(g.history_summary, "新鲜摘要")
         self.assertEqual(g.history_summary_updated, now - 60)
 
+    # ===== v0.6.4+：过期摘要清理循环 补强 =====
+
+    def test_stale_prune_loop_skips_when_persist_disabled(self) -> None:
+        """v0.6.4+：persist_enabled=False 时循环跳过（不调 _prune_stale_history）"""
+        import asyncio as _aio
+        now = __import__("time").time()
+        self.plugin.config = _Cfg({
+            "history_discard_age": 86400,
+            "persist_enabled": False,
+        })
+        # 远古摘要：即使过期也不该被清
+        self.plugin.groups["g1"] = GroupContext(
+            history_summary="应保留",
+            history_summary_updated=now - 86400 * 5,
+            history_daily_summary="也应保留",
+            history_daily_updated=now - 86400 * 5,
+        )
+
+        async def _mock_sleep(_):
+            raise _aio.CancelledError()
+
+        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+            try:
+                _aio.run(self.plugin._stale_history_prune_loop())
+            except _aio.CancelledError:
+                pass
+
+        g = self.plugin.groups["g1"]
+        # 摘要没被动过（persist 关掉了整个 prune 流程）
+        self.assertEqual(g.history_summary, "应保留")
+        self.assertEqual(g.history_daily_summary, "应保留")
+
+    def test_stale_prune_loop_force_saves_on_actual_clear(self) -> None:
+        """v0.6.4+：真清掉东西时 _save_if_needed(force=True) 会被调用"""
+        import asyncio as _aio
+        now = __import__("time").time()
+        self.plugin.config = _Cfg({
+            "history_discard_age": 86400,
+            "persist_enabled": True,
+        })
+        self.plugin.groups["silent-1"] = GroupContext(
+            history_summary="过期",
+            history_summary_updated=now - 86400 * 2,
+        )
+
+        save_calls = {"n": 0, "forces": []}
+        real_save = self.plugin._save_if_needed
+
+        def _spy_save(force=False):
+            save_calls["n"] += 1
+            save_calls["forces"].append(force)
+            # 不真写盘
+        self.plugin._save_if_needed = _spy_save  # type: ignore[assignment]
+
+        async def _mock_sleep(_):
+            raise _aio.CancelledError()
+
+        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+            try:
+                _aio.run(self.plugin._stale_history_prune_loop())
+            except _aio.CancelledError:
+                pass
+
+        # 至少调过 1 次且 force=True
+        self.assertGreaterEqual(save_calls["n"], 1)
+        self.assertIn(True, save_calls["forces"])
+        # 顺手验证下 real_save 没被改坏
+        self.plugin._save_if_needed = real_save  # type: ignore[assignment]
+
     def test_topic_heat_trend_rising(self) -> None:
         messages = [
             MessageRecord("10001", "alice", "旧消息", 20.0, False),

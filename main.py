@@ -868,6 +868,11 @@ class SocialContextPlugin(Star):
                 if pruned > 0:
                     # 内存清掉后立刻 force save，把清掉的结果同步到磁盘
                     self._save_if_needed(force=True)
+                    # v0.6.4+：真清掉东西才 info 一次，避免每天 24 条日志噪音
+                    if self._should_warn("stale_prune_acted"):
+                        logger.info(
+                            f"[social_context] 过期摘要清理: 本轮 {pruned} 个群受影响，已 force save"
+                        )
             except asyncio.CancelledError:
                 return
             except Exception as exc:

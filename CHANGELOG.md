@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.4 - 2026-06-13
+
+- **补丁：v0.6.3 清理循环补强**——加 `stale_prune_acted` info log（v0.6.4 之前没加，循环每天最多产生 ~24 条 info 噪音）；新增 2 个单测。
+- `_stale_history_prune_loop` 在 `pruned > 0` 分支末尾：`_save_if_needed(force=True)` 之后多一行 `if self._should_warn("stale_prune_acted"): logger.info(...)`。60s 内同 key 只 info 一次。
+- 新增 2 个单测：
+  - `test_stale_prune_loop_skips_when_persist_disabled`——`persist_enabled=False` 时整个 prune 流程跳过，摘要保留
+  - `test_stale_prune_loop_force_saves_on_actual_clear`——真清掉东西时 `_save_if_needed(force=True)` 真的被调到
+- metadata.yaml v0.6.3 → v0.6.4。
+- 备注：v0.6.3 commit 之前因工具自动应用补丁出现过方法/字段重复，本次先 `git checkout HEAD -- main.py` 把 main.py 复位到 v0.6.3 干净状态，再干净地叠加 v0.6.4 改动。
+
 ## v0.6.3 - 2026-06-13
 
 - **补丁：持久化过期摘要定时清理**——之前 `_prune_stale_history` 只在 load / save / 注入 prompt 前跑，完全静默群的过期摘要会一直留在内存和 JSON 里。

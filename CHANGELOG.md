@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.0 - 2026-06-13
+
+- 新增 `output_step` 模块与 `reply` 智能引用步骤：bot 准备回复时，若原消息之后被插了 ≥ `reply_step_threshold` 条新消息，会在回复头部插入 `Reply(id=原消息id)` 组件，可选附加 `At` 提醒原消息发送者。
+- 新增 `MessageRecord.message_id` 字段（仅内存，不持久化），用于按消息 id 在短期窗口中定位原消息位置。
+- 新增 `@filter.on_decorating_result(priority=10)` 钩子入口；复用现有 `group.messages` + `prune` 窗口，不新建独立队列。
+- 新增 3 个配置项：`reply_step_enabled`（默认 true）/ `reply_step_threshold`（默认 3）/ `reply_step_include_at`（默认 true）。
+- chain 白名单沿用 outputpro 的 `Plain | Image | Face | At`：含 `Video / Forward / Nodes` 等组件时整步跳过。
+- `unsupported_platforms` 含 `dingtalk`，沿用 outputpro 行为。
+- 持久化 `_group_to_json` 同步过滤 `message_id` 字段，确保不落盘。
+- README / `_conf_schema.json` / 回归测试同步更新。
+
 ## v0.4.9 - 2026-06-13
 
 - 将 `block_group_temp_private_notice` 默认值改为空字符串，群聊临时会话私聊拦截默认静默，只记录日志并 `stop_event()`。

@@ -315,5 +315,93 @@ class PluginHelperTests(unittest.TestCase):
         self.assertNotIn("[群聊状态观察 / 正式回复参考]", request.system_prompt)
 
 
+class ReplyStepTests(unittest.TestCase):
+    """output_step.reply 智能引用纯函数测试。"""
+
+    def setUp(self) -> None:
+        # 延迟 import，测试运行时 sys.path 已被 _PLUGIN_ROOT 注入
+        from output_step.reply import should_insert_reply
+        from astrbot.core.message.components import Plain, Video
+
+        self.should_insert_reply = should_insert_reply
+        self.Plain = Plain
+        self.Video = Video
+
+    @staticmethod
+    def _make_records(count: int, target_id: str = "msg-target") -> list:
+        """生成 count 条记录，最后一条的 message_id 是 target_id。"""
+        from types import SimpleNamespace
+
+        return [
+            SimpleNamespace(message_id=target_id if i == count - 1 else f"msg-{i}")
+            for i in range(count)
+        ]
+
+    def test_should_insert_reply_no_match(self) -> None:
+        chain = [self.Plain("hi")]
+        messages = self._make_records(3)  # 最后一条 id=msg-target
+        ok, pushed = self.should_insert_reply(
+            chain=chain,
+            messages=messages,
+            target_message_id="nonexistent",
+            threshold=3,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(pushed, 0)
+
+    def test_should_insert_reply_under_threshold(self) -> None:
+        chain = [self.Plain("hi")]
+        messages = self._make_records(2)  # 最后一条 id=msg-target
+        messages.append(self._make_records(1, "inter-1")[0])  # 追加 1 条插嘴
+        ok, pushed = self.should_insert_reply(
+            chain=chain,
+            messages=messages,
+            target_message_id="msg-target",
+            threshold=3,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(pushed, 1)
+
+    def test_should_insert_reply_meets_threshold(self) -> None:
+        chain = [self.Plain("hi")]
+        messages = self._make_records(1)  # 1 条：target
+        for i in range(5):
+            messages.append(self._make_records(1, f"inter-{i}")[0])
+        ok, pushed = self.should_insert_reply(
+            chain=chain,
+            messages=messages,
+            target_message_id="msg-target",
+            threshold=3,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(pushed, 5)
+
+    def test_should_insert_reply_chain_has_video(self) -> None:
+        chain = [self.Plain("hi"), self.Video(file="x.mp4")]
+        messages = self._make_records(1)
+        for i in range(5):
+            messages.append(self._make_records(1, f"inter-{i}")[0])
+        ok, pushed = self.should_insert_reply(
+            chain=chain,
+            messages=messages,
+            target_message_id="msg-target",
+            threshold=3,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(pushed, 0)  # chain 不白名单，pushed 不计算
+
+    def test_should_insert_reply_threshold_zero(self) -> None:
+        chain = [self.Plain("hi")]
+        messages = self._make_records(1)
+        ok, pushed = self.should_insert_reply(
+            chain=chain,
+            messages=messages,
+            target_message_id="msg-target",
+            threshold=0,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(pushed, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -33,6 +33,23 @@ try:
 except ImportError:  # pragma: no cover - 兼容直接脚本方式导入 main.py
     from prompt_security import scan_injection_risk, scan_variables
 
+try:
+    from .output_step.reply import (
+        AtComponent,
+        PlainComponent,
+        ReplyComponent,
+        UNSUPPORTED_PLATFORMS,
+        should_insert_reply,
+    )
+except ImportError:  # pragma: no cover - 兼容直接脚本方式导入 main.py
+    from output_step.reply import (
+        AtComponent,
+        PlainComponent,
+        ReplyComponent,
+        UNSUPPORTED_PLATFORMS,
+        should_insert_reply,
+    )
+
 
 @dataclass
 class JudgeResult:
@@ -93,6 +110,9 @@ class MessageRecord:
     content: str
     timestamp: float
     is_bot: bool = False
+    # 仅在内存中使用（不持久化），用于按消息 id 在窗口中定位原消息。
+    # 进程重启后会被 _load_state 默认为空字符串。
+    message_id: str = ""
 
 
 @dataclass
@@ -350,12 +370,15 @@ class SocialContextPlugin(Star):
         user = self._get_user(sender_id)
 
         is_bot = sender_id == str(event.get_self_id())
+        message_obj = getattr(event, "message_obj", None)
+        message_id = str(getattr(message_obj, "message_id", "") or "") if message_obj else ""
         record = MessageRecord(
             sender_id=sender_id,
             sender_name=self._sender_name(event),
             content=content,
             timestamp=now,
             is_bot=is_bot,
+            message_id=message_id,
         )
         group.messages.append(record)
         group.total_messages_today += 1
@@ -578,6 +601,66 @@ class SocialContextPlugin(Star):
                 "回复应自然、简短，像普通群成员一样加入话题。）"
             )
             request.system_prompt = (request.system_prompt or "").rstrip() + "\n" + note
+
+    @filter.on_decorating_result(priority=10)
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        """v0.5.0+ 智能引用：在 LLM 响应后、消息发送前按需插入 Reply 组件。"""
+        if not self._cfg_bool("enabled", True):
+            return
+        if not self._cfg_bool("reply_step_enabled", True):
+            return
+        try:
+            platform_name = event.get_platform_name()
+        except Exception:
+            platform_name = ""
+        if platform_name in UNSUPPORTED_PLATFORMS:
+            return
+
+        result = event.get_result()
+        if not result:
+            return
+        chain = getattr(result, "chain", None)
+        if not chain:
+            return
+
+        message_obj = getattr(event, "message_obj", None)
+        target_id = str(getattr(message_obj, "message_id", "") or "") if message_obj else ""
+        if not target_id:
+            return
+
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+        scope = self._scope_id(event)
+        group = self._get_group(scope)
+        now = time.time()
+        # 先 prune 一次，避免把窗口外的"插嘴"算进去
+        group.prune(
+            now,
+            self._cfg_int("window_seconds", 60, 1),
+            self._cfg_int("max_messages", 80, 1),
+        )
+
+        threshold = self._cfg_int("reply_step_threshold", 3, 0)
+        should, pushed = should_insert_reply(
+            chain=chain,
+            messages=group.messages,
+            target_message_id=target_id,
+            threshold=threshold,
+        )
+        if not should:
+            return
+
+        chain.insert(0, ReplyComponent(id=target_id))
+        if self._cfg_bool("reply_step_include_at", True) and isinstance(
+            event, AiocqhttpMessageEvent
+        ):
+            chain.insert(1, AtComponent(qq=event.get_sender_id()))
+            chain.insert(2, PlainComponent(text="\u200b \u200b"))
+
+        logger.debug(
+            f"[social_context] 智能引用：原消息 {target_id} 后被插 {pushed} 条"
+        )
 
     @filter.command("social_context")
     async def social_context_status(self, event: AstrMessageEvent):
@@ -1047,8 +1130,12 @@ class SocialContextPlugin(Star):
             logger.warning(f"[social_context] 读取状态失败，已忽略旧状态: {exc}")
 
     def _group_to_json(self, group: GroupContext) -> dict[str, Any]:
+        # message_id 与 content 都不落盘（content 隐私自 v0.4.3 起；message_id 仅内存用，无持久化意义）
         return {
-            "messages": [{k: v for k, v in asdict(m).items() if k != "content"} for m in group.messages],
+            "messages": [
+                {k: v for k, v in asdict(m).items() if k not in ("content", "message_id")}
+                for m in group.messages
+            ],
             "pokes": [asdict(p) for p in group.pokes],
             "last_bot_reply_time": group.last_bot_reply_time,
             "last_injected_time": 0.0,

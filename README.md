@@ -1,6 +1,6 @@
 # AstrBot Plugin Social Context
 
-轻量群聊状态感知层。它维护短期群氛围、互动事件和用户熟悉度，并向回复模型或“自主选择模型用于判断是否回复”的流程提供可配置 social context。
+群聊状态感知 + 输出微调层。它维护短期群氛围、互动事件和用户熟悉度，并向回复模型或“自主选择模型用于判断是否回复”的流程提供可配置 social context；v0.5.0+ 起在发送前可对回复链做轻量微调（智能引用）。
 
 ## 当前功能
 
@@ -11,9 +11,29 @@
 - v0.3.0 起两个 prompt 都可在配置中自定义模板：
   - `reply_prompt_template`：正式回复完整注入模板（高级选项，默认不启用）。
   - `judge_prompt_template`：判断模型注入模板。
+- v0.5.0 起在 `on_decorating_result` 阶段做轻量输出微调：
+  - `reply_step`：原消息之后被插 ≥ N 条新消息时，在回复头部插入 `Reply` 组件（带可选 `At`），避免多人活跃群中上下文错位。
 - 提供 `/social_context` 查看当前会话状态。
 - 管理员可用 `/social_context_reset` 重置当前会话状态。
 - JSON 持久化，默认保存到 `data/plugin_data/astrbot_plugin_social_context/social_context_state.json`。
+
+## 输出微调（v0.5.0+）
+
+v0.5.0 起插件可以在 AstrBot 发送消息前对回复链做轻量微调。目前提供一个 step：
+
+### 智能引用
+
+bot 准备回复时，如果原消息之后被插了 ≥ N 条新消息（N 由阈值控制），会在回复头部插入 `Reply(id=原消息id)` 组件，可选再附加 `At` 提醒原消息发送者。
+
+- 触发条件：原消息之后被插 ≥ `reply_step_threshold` 条新消息
+- 复用 `group.messages` 短期窗口（与 LLM 注入共用），窗口外的"插嘴"不计入
+- chain 白名单：`Plain | Image | Face | At`——若 chain 含 `Video / Forward / Nodes` 等组件，整步跳过
+- 平台限制：`dingtalk` 不支持
+- priority：`10`
+- chain 修改发生在 AstrBot `on_decorating_result` 阶段，不会影响 LLM 生成过程
+- 借鉴自 outputpro 的 reply step（v0.5.0 起 outputpro 停用后由本插件接管）
+
+**关闭方式**：把 `reply_step_enabled` 设为 false（不影响其他功能）。
 
 ## 双模块化 prompt
 

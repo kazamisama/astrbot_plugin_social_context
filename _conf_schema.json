@@ -150,6 +150,24 @@
         "type": "int",
         "default": 60
     },
+    "reply_step_enabled": {
+    "description": "⑨ 输出微调 / 启用智能引用（v0.5.0+）",
+    "hint": "开启后，bot 准备回复时如果原消息之后被插了 ≥ reply_step_threshold 条新消息，会在回复头部插入 Reply 组件（带可选 At）。",
+    "type": "bool",
+    "default": true
+    },
+    "reply_step_threshold": {
+    "description": "⑨ 输出微调 / 智能引用阈值",
+    "hint": "原消息之后被插多少条新消息才触发智能引用。0 表示关闭。",
+    "type": "int",
+    "default": 3
+    },
+    "reply_step_include_at": {
+    "description": "⑨ 输出微调 / 智能引用附带 @原消息发送者",
+    "hint": "开启后会在 Reply 组件之后再插入 At 组件，让原消息发送者收到 @ 提醒。仅 aiocqhttp/OneBot 生效。",
+    "type": "bool",
+    "default": true
+    },
     "reply_prompt_template": {
         "description": "⑧ 高级模板 / 正式回复注入模板",
         "hint": "高级选项，仅在 reply_inject_enabled=true 时使用。用于正式 LLM 回复阶段追加完整群聊观察。支持占位符：{window_seconds} {vibe} {message_count} {active_user_count} {recent_speakers} {poke_count} {latest_poke_sender} {latest_poke_target} {last_bot_reply_elapsed} {current_user_name} {current_user_id} {current_user_message_count_today} {current_user_poke_sent_today} {current_user_poke_received_today} {current_user_familiarity}。",

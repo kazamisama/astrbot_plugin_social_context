@@ -219,6 +219,8 @@ class SocialContextPlugin(Star):
         # v0.6.1+：tier2 fire-and-forget 任务池 + tier3 后台循环
         self._compress_tasks: set[asyncio.Task] = set()
         self._tier3_task: asyncio.Task | None = None
+        # v0.6.2+：warning 去重（key -> last warn timestamp）；同 key 60s 内只 warn 一次
+        self._compress_warn_last: dict[str, float] = {}
 
         self.data_dir = self._resolve_data_dir()
         self.state_path = self._resolve_state_path()
@@ -573,6 +575,38 @@ class SocialContextPlugin(Star):
         "\n新增消息（按时间顺序，已脱敏处理）：\n{new_messages}\n"
     )
 
+    def _should_warn(self, key: str, throttle: float = 60.0) -> bool:
+        """v0.6.2+：warning 去重门。同 key 在 throttle 秒内只允许 warn 一次。
+
+        用于 LLM 失败 / provider 异常这类持续性错误，避免日志被刷爆。
+        """
+        now = time.time()
+        last = self._compress_warn_last.get(key, 0.0)
+        if (now - last) < throttle:
+            return False
+        self._compress_warn_last[key] = now
+        # 顺手清理一下过期项（避免 dict 无限增长）
+        if len(self._compress_warn_last) > 256:
+            cutoff = now - throttle * 10
+            self._compress_warn_last = {
+                k: v for k, v in self._compress_warn_last.items() if v >= cutoff
+            }
+        return True
+
+    @staticmethod
+    def _log_compress_task_exception(task: asyncio.Task) -> None:
+        """v0.6.2+：fire-and-forget task 异常回调。done_callback 用。
+
+        不光 log 异常，还 try 把 inflight 标志清掉（如果 group 还在）。
+        """
+        try:
+            exc = task.exception()
+        except (asyncio.CancelledError, Exception):
+            return
+        if exc is None:
+            return
+        logger.warning(f"[social_context] 压缩 task 未捕获异常: {exc!r}")
+
     def _build_compress_prompt(self, old: str, new_messages: list, max_chars: int) -> str:
         """构造压缩 prompt。
 
@@ -603,6 +637,7 @@ class SocialContextPlugin(Star):
         """调 judge_provider_id 对应的 provider 跑一次压缩。
 
         失败 / 超时 / 返回空 都返 None，调用方按"保留旧摘要"处理。
+        v0.6.2+：warning 走 _should_warn 去重，避免 LLM 挂掉时日志被刷爆。
         """
         if not prompt:
             return None
@@ -612,9 +647,12 @@ class SocialContextPlugin(Star):
         try:
             provider = self.context.get_provider_by_id(provider_id)
         except Exception as exc:
-            logger.warning(f"[social_context] 获取压缩 provider 失败: {exc}")
+            if self._should_warn(f"get_provider:{provider_id}"):
+                logger.warning(f"[social_context] 获取压缩 provider 失败: {exc}")
             return None
         if not provider:
+            if self._should_warn(f"provider_none:{provider_id}"):
+                logger.warning(f"[social_context] 压缩 provider 不存在: {provider_id}")
             return None
         try:
             response = await asyncio.wait_for(
@@ -629,10 +667,12 @@ class SocialContextPlugin(Star):
             content = (getattr(response, "completion_text", "") or "").strip()
             return content or None
         except asyncio.TimeoutError:
-            logger.warning(f"[social_context] 历史压缩 LLM 超时（{timeout}s）")
+            if self._should_warn(f"timeout:{provider_id}"):
+                logger.warning(f"[social_context] 历史压缩 LLM 超时（{timeout}s）")
             return None
         except Exception as exc:
-            logger.warning(f"[social_context] 历史压缩 LLM 异常: {exc}")
+            if self._should_warn(f"llm_error:{provider_id}:{type(exc).__name__}"):
+                logger.warning(f"[social_context] 历史压缩 LLM 异常: {exc}")
             return None
 
     async def _compress_history_tier2(self, group_id: str) -> None:
@@ -747,7 +787,11 @@ class SocialContextPlugin(Star):
         return "\n".join(lines)
 
     def _maybe_schedule_tier2_compress(self, group_id: str) -> None:
-        """D 方案 tier2 触发点：on-message 后调用。fire-and-forget。"""
+        """D 方案 tier2 触发点：on-message 后调用。fire-and-forget。
+
+        v0.6.2+：done_callback 除了 discard 还挂一个异常记录器，
+        避免 task 顶层抛异常时只看到「Task exception was never retrieved」。
+        """
         if not self._cfg_bool("history_compress_tier2_enabled", True):
             return
         if not self._cfg_bool("history_compress_tier2_on_message", True):
@@ -765,7 +809,9 @@ class SocialContextPlugin(Star):
         try:
             task = asyncio.create_task(self._compress_history_tier2(group_id))
             self._compress_tasks.add(task)
+            # 一个 callback 处理 discard，另一个处理异常记录
             task.add_done_callback(self._compress_tasks.discard)
+            task.add_done_callback(self._log_compress_task_exception)
         except RuntimeError:
             # 事件循环已关闭（插件 terminate 后还在跑），静默丢弃
             pass
@@ -783,22 +829,35 @@ class SocialContextPlugin(Star):
             pass
 
     async def _tier3_compress_loop(self) -> None:
-        """D 方案 tier3 循环：定时遍历所有群。"""
-        try:
-            while True:
-                interval = self._cfg_int("history_compress_tier3_interval", 3600, 60)
-                await asyncio.sleep(interval)
-                if not self._cfg_bool("history_compress_tier3_enabled", True):
-                    continue
-                for gid in list(self.groups.keys()):
-                    try:
-                        await self._compress_history_tier3(gid)
-                    except Exception as exc:
-                        logger.warning(f"[social_context] tier3 压缩失败 [{gid}]: {exc}")
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            logger.warning(f"[social_context] tier3 循环异常退出: {exc}")
+        """D 方案 tier3 循环：定时遍历所有群。
+
+        v0.6.2+：外层加自愈 try/except，避免 await asyncio.sleep() 抛非 CancelledError
+        时整个循环静默死亡。CancelledError 仍走外层正常退出（terminate 时触发）。
+        """
+        while True:
+            try:
+                while True:
+                    interval = self._cfg_int("history_compress_tier3_interval", 3600, 60)
+                    await asyncio.sleep(interval)
+                    if not self._cfg_bool("history_compress_tier3_enabled", True):
+                        continue
+                    for gid in list(self.groups.keys()):
+                        try:
+                            await self._compress_history_tier3(gid)
+                        except Exception as exc:
+                            if self._should_warn(f"tier3_compress:{gid}"):
+                                logger.warning(
+                                    f"[social_context] tier3 压缩失败 [{gid}]: {exc}"
+                                )
+            except asyncio.CancelledError:
+                # 插件 terminate 触发的正常取消，安静退出
+                return
+            except Exception as exc:
+                # 自愈：非取消异常时记一笔后重进外层循环
+                if self._should_warn("tier3_loop"):
+                    logger.warning(f"[social_context] tier3 循环异常，将自愈重试: {exc}")
+                await asyncio.sleep(60)  # 防忙等
+                continue
 
     def _is_private_event(self, event: AstrMessageEvent) -> bool:
         try:

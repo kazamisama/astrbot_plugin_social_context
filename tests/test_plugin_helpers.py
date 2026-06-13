@@ -643,6 +643,92 @@ class PluginHelperTests(unittest.TestCase):
         out = self.plugin._format_tier3_messages([])
         self.assertIn("无新增消息", out)
 
+    # ===== v0.6.2+：失败兜底补丁（warning 去重 / tier3 自愈 / task 异常日志）测试 =====
+
+    def test_should_warn_throttle(self) -> None:
+        """v0.6.2+：同 key 60s 内只 warn 一次"""
+        self.assertTrue(self.plugin._should_warn("test_key", throttle=60))
+        # 紧接着再调一次应该被 throttled
+        self.assertFalse(self.plugin._should_warn("test_key", throttle=60))
+        # 不同 key 不影响
+        self.assertTrue(self.plugin._should_warn("other_key", throttle=60))
+
+    def test_should_warn_expires_after_throttle(self) -> None:
+        """v0.6.2+：throttle 过期后能再次 warn"""
+        self.plugin._compress_warn_last["expired_key"] = __import__("time").time() - 100
+        # 100s 前 warn 过，throttle=60 → 过期 → 允许再 warn
+        self.assertTrue(self.plugin._should_warn("expired_key", throttle=60))
+
+    def test_should_warn_cleans_dict(self) -> None:
+        """v0.6.2+：warn 字典过大时清理过期项"""
+        import time as _t
+        # 塞 300 个远古 key
+        old_ts = _t.time() - 1000
+        for i in range(300):
+            self.plugin._compress_warn_last[f"old_{i}"] = old_ts
+        # 触发一次 warn，dict 应该被清理
+        self.plugin._should_warn("new_key", throttle=60)
+        # 远古 key 应该没了
+        self.assertNotIn("old_0", self.plugin._compress_warn_last)
+        self.assertIn("new_key", self.plugin._compress_warn_last)
+
+    def test_log_compress_task_exception_swallows_cancelled(self) -> None:
+        """v0.6.2+：done_callback 对 cancelled 任务不报"""
+        async def _t():
+            raise asyncio.CancelledError()
+        task = asyncio.create_task(_t())
+        # 让 task 自然 cancelled
+        try:
+            asyncio.run(self._await_task(task))
+        except Exception:
+            pass
+        # 不应该抛
+        self.plugin._log_compress_task_exception(task)
+
+    @staticmethod
+    async def _await_task(t):
+        try:
+            await t
+        except Exception:
+            pass
+
+    def test_log_compress_task_exception_logs_on_failure(self) -> None:
+        """v0.6.2+：task 异常时被记录（不抛）"""
+        async def _failing():
+            raise RuntimeError("boom")
+        task = asyncio.create_task(_failing())
+        asyncio.run(self._await_task(task))
+        # 不抛即可（logger.warning 内部吃掉）
+        self.plugin._log_compress_task_exception(task)
+
+    def test_tier3_loop_self_heals_on_exception(self) -> None:
+        """v0.6.2+：tier3 循环在非 CancelledError 异常后能自愈
+
+        通过 patch asyncio.sleep 让第一次抛异常、第二次正常 → 验证循环没死。
+        """
+        import asyncio as _aio
+        sleep_calls = {"n": 0}
+
+        async def _mock_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] == 1:
+                raise RuntimeError("simulated sleep boom")
+            # 第二次正常，但也要能让 task 取消
+            raise _aio.CancelledError()
+
+        self.plugin.config = _Cfg({
+            "history_compress_tier3_enabled": True,
+            "history_compress_tier3_interval": 60,
+        })
+
+        # 跑循环直到第一次 sleep 异常 → 自愈 → 第二次 sleep 被取消
+        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+            try:
+                _aio.run(self.plugin._tier3_compress_loop())
+            except _aio.CancelledError:
+                pass
+        self.assertGreaterEqual(sleep_calls["n"], 2)  # 至少跑了 2 次 sleep
+
     def test_topic_heat_trend_rising(self) -> None:
         messages = [
             MessageRecord("10001", "alice", "旧消息", 20.0, False),

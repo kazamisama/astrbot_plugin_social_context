@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.6.2 - 2026-06-13
+
+- **补丁：失败兜底强化**（v0.6.1 暴露的 3 个小坑一次性收口）。
+- **坑 3 修：warning 日志去重**——新增 `self._compress_warn_last: dict[str, float]`，新增 helper `_should_warn(key, throttle=60.0)`。`_call_compress_llm` 4 处 `logger.warning` 全部改成走 `_should_warn` 节流（`get_provider:{id}` / `provider_none:{id}` / `timeout:{id}` / `llm_error:{id}:{exc_type}`），同 key 60s 内只 warn 一次。dict 超过 256 项时按 `throttle * 10` 清理过期项。
+- **坑 2 修：tier3 循环自愈**——`_tier3_compress_loop` 外层加 `while True: try/except` 自愈循环。非 `CancelledError` 异常时 sleep 60s 后重进内层循环，不再静默死亡；warn 走 `tier3_loop` key 去重。`CancelledError` 仍正常退出（`terminate` 触发）。
+- **坑 4 修：fire-and-forget 异常显式记录**——新增静态方法 `_log_compress_task_exception(task)`，作为第二个 `add_done_callback` 挂到 tier2 任务上。task 抛异常时会 log `压缩 task 未捕获异常: {exc!r}`，不再只看到 "Task exception was never retrieved"。
+- 新增 6 个单测：`_should_warn` 节流 / 过期 / 字典清理 / 取消任务不报 / 失败任务记录 / tier3 自愈循环。
+- metadata.yaml v0.6.1 → v0.6.2。
+
 ## v0.6.1 - 2026-06-13
 
 - **新增：历史压缩（D 方案）**——tier2 走 on-message lazy + interval 节流，tier3 走单一定时器。

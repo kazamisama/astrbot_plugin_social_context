@@ -349,6 +349,121 @@ class PluginHelperTests(unittest.TestCase):
             mentioned_user_ids=(), is_bot_sender=False,
         ))
 
+    # ===== v0.6.0+：三层时间结构测试 =====
+
+    def test_history_tier_bounds_default(self) -> None:
+        """v0.6.0+：默认三层时间边界 (180, 1800, 86400, 86400)"""
+        t1, t2, t3, discard = self.plugin._history_tier_bounds()
+        self.assertEqual((t1, t2, t3, discard), (180, 1800, 86400, 86400))
+
+    def test_history_tier_bounds_custom(self) -> None:
+        """v0.6.0+：自定义配置可覆盖边界"""
+        self.plugin.config = _Cfg({
+            "history_tier1_max_age": 60,
+            "history_tier2_max_age": 600,
+            "history_tier3_max_age": 3600,
+            "history_discard_age": 7200,
+        })
+        t1, t2, t3, discard = self.plugin._history_tier_bounds()
+        self.assertEqual((t1, t2, t3, discard), (60, 600, 3600, 7200))
+
+    def test_classify_message_tier(self) -> None:
+        """v0.6.0+：根据消息距今秒数正确归类到 tier1/2/3/0"""
+        t1, t2, t3, _ = 180, 1800, 86400, 86400
+        self.assertEqual(self.plugin._classify_message_tier(0, t1, t2, t3), 1)
+        self.assertEqual(self.plugin._classify_message_tier(50, t1, t2, t3), 1)
+        self.assertEqual(self.plugin._classify_message_tier(180, t1, t2, t3), 1)
+        self.assertEqual(self.plugin._classify_message_tier(181, t1, t2, t3), 2)
+        self.assertEqual(self.plugin._classify_message_tier(1800, t1, t2, t3), 2)
+        self.assertEqual(self.plugin._classify_message_tier(1801, t1, t2, t3), 3)
+        self.assertEqual(self.plugin._classify_message_tier(86400, t1, t2, t3), 3)
+        self.assertEqual(self.plugin._classify_message_tier(86401, t1, t2, t3), 0)
+
+    def test_get_messages_in_tier(self) -> None:
+        """v0.6.0+：按时间档筛消息"""
+        now = 100000.0
+        group = GroupContext(messages=deque([
+            MessageRecord("u1", "alice", "a", now - 10, False),   # tier1
+            MessageRecord("u2", "bob",   "b", now - 300, False),  # tier2
+            MessageRecord("u3", "carol", "c", now - 5000, False), # tier2 (1500-1800 是 5000, 等等 5000>1800 实际是 tier3)
+            MessageRecord("u4", "dave",  "d", now - 7200, False), # tier3
+            MessageRecord("u5", "eve",   "e", now - 100000, False),# 超出
+        ]))
+        self.plugin.config = _Cfg({
+            "history_tier1_max_age": 180,
+            "history_tier2_max_age": 1800,
+            "history_tier3_max_age": 86400,
+        })
+        t1_msgs = self.plugin._get_messages_in_tier(group, now, 1)
+        t2_msgs = self.plugin._get_messages_in_tier(group, now, 2)
+        t3_msgs = self.plugin._get_messages_in_tier(group, now, 3)
+        self.assertEqual([m.sender_id for m in t1_msgs], ["u1"])
+        self.assertEqual([m.sender_id for m in t2_msgs], ["u2"])
+        # u3=5000s 实际落在 tier3，u4=7200s 也 tier3
+        self.assertEqual([m.sender_id for m in t3_msgs], ["u3", "u4"])
+
+    def test_prune_stale_history_discards_after_1_day(self) -> None:
+        """v0.6.0+：摘要超过 1 天自动抛弃"""
+        now = 200000.0
+        group = GroupContext(
+            history_summary="上周话题摘要",
+            history_summary_updated=now - 86400 - 1,  # 刚好超过 1 天
+            history_daily_summary="昨日要事",
+            history_daily_updated=now - 86400 - 1,
+        )
+        self.plugin._prune_stale_history(group, now)
+        self.assertEqual(group.history_summary, "")
+        self.assertEqual(group.history_summary_updated, 0.0)
+        self.assertEqual(group.history_daily_summary, "")
+        self.assertEqual(group.history_daily_updated, 0.0)
+
+    def test_prune_stale_history_keeps_fresh(self) -> None:
+        """v0.6.0+：未到 1 天的摘要保留"""
+        now = 200000.0
+        group = GroupContext(
+            history_summary="30 分钟前的话题",
+            history_summary_updated=now - 100,
+            history_daily_summary="今日早些时候",
+            history_daily_updated=now - 3600,
+        )
+        self.plugin._prune_stale_history(group, now)
+        self.assertEqual(group.history_summary, "30 分钟前的话题")
+        self.assertEqual(group.history_daily_summary, "今日早些时候")
+
+    def test_group_to_json_persists_history_summaries(self) -> None:
+        """v0.6.0+：历史摘要持久化"""
+        group = GroupContext(
+            history_summary="中期摘要",
+            history_summary_updated=1234.5,
+            history_daily_summary="更早期摘要",
+            history_daily_updated=5678.9,
+        )
+        data = self.plugin._group_to_json(group)
+        self.assertEqual(data["history_summary"], "中期摘要")
+        self.assertEqual(data["history_summary_updated"], 1234.5)
+        self.assertEqual(data["history_daily_summary"], "更早期摘要")
+        self.assertEqual(data["history_daily_updated"], 5678.9)
+
+    def test_judge_block_includes_tier_structure(self) -> None:
+        """v0.6.0+：judge block 必须出现三层时间结构 + 摘要占位"""
+        event = _Event(message="在吗", chain=[_at("99999")])
+        group = GroupContext(
+            messages=deque([
+                MessageRecord("u1", "alice", "a", 9999999999.0, False),
+            ])
+        )
+        self.plugin.groups["group-1"] = group
+        self.plugin.users["10001"] = UserContext(user_id="10001")
+        block = self.plugin.build_judge_prompt_block("group-1", event, max_age=9999999999)  # type: ignore[arg-type]
+        self.assertIn("历史时间分层", block)
+        self.assertIn("tier1", block)
+        self.assertIn("tier2", block)
+        self.assertIn("tier3", block)
+        self.assertIn("历史摘要 tier2", block)
+        self.assertIn("历史摘要 tier3", block)
+        # 空摘要时显示 "暂无" 占位
+        self.assertIn("暂无", block)
+
     def test_topic_heat_trend_rising(self) -> None:
         messages = [
             MessageRecord("10001", "alice", "旧消息", 20.0, False),

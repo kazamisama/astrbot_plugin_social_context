@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.6.0 - 2026-06-13
+
+- **新增：历史时间三层结构**（本版本先落地"时间结构"层，LLM 压缩内容留待下个 patch）。
+- `GroupContext` 新增 4 个持久化字段：`history_summary` / `history_summary_updated`（tier2 摘要，180s~30min）/ `history_daily_summary` / `history_daily_updated`（tier3 摘要，30min~24h）。
+- 新增 4 个配置项 `history_tier1_max_age`（默认 180）/ `history_tier2_max_age`（默认 1800）/ `history_tier3_max_age`（默认 86400）/ `history_discard_age`（默认 86400 = 1 天）。
+- 新增 helper `_history_tier_bounds()` / `_classify_message_tier()` / `_get_messages_in_tier()` / `_format_tier_label()`：把每条消息按"距今多少秒"归到 tier1/2/3/0。
+- 新增 `_prune_stale_history(group, now)`：持久化摘要 updated 时间距今 > `history_discard_age`（默认 1 天）自动清空。
+- `_load_state` 载入后立即跑一次 `_prune_stale_history`，`_save_if_needed` 写盘前也跑一次——保证陈旧摘要不会复活。
+- judge prompt template 新增 3 行：`## 历史时间分层` 统计每层消息数 / `## 历史摘要 tier2` / `## 历史摘要 tier3`。当前摘要内容为"暂无"占位（等下个版本接 LLM 压缩）。
+- 新增 7 个单测：默认边界 / 自定义边界 / `_classify_message_tier` 全档位 / `_get_messages_in_tier` 分类 / 过期摘要抛弃 / 未过期保留 / 持久化字段落盘 / judge block 出现三层结构。
+
 ## v0.5.3 - 2026-06-13
 
 - **修复：主语指向判断错误**（`_bot_relevance` / `_conversation_opening` 误把群友间互动当成对 bot 的邀请）。

@@ -126,6 +126,30 @@
         "type": "int",
         "default": 180
     },
+    "history_tier1_max_age": {
+        "description": "⑥ 历史分层 / 第 1 层时间边界（秒）",
+        "hint": "v0.6.0+ 三层时间结构：tier1 (0 ~ 此值) 完整消息列表；tier2 (此值 ~ tier2_max) 压缩摘要；tier3 (tier2_max ~ tier3_max) 更早期摘要。建议 <= judge_context_max_age。",
+        "type": "int",
+        "default": 180
+    },
+    "history_tier2_max_age": {
+        "description": "⑥ 历史分层 / 第 2 层时间边界（秒）",
+        "hint": "v0.6.0+ tier2 摘要覆盖 (tier1_max, 此值] 区间内的消息。默认 1800 = 30 分钟。",
+        "type": "int",
+        "default": 1800
+    },
+    "history_tier3_max_age": {
+        "description": "⑥ 历史分层 / 第 3 层时间边界（秒）",
+        "hint": "v0.6.0+ tier3 摘要覆盖 (tier2_max, 此值] 区间内的历史。默认 86400 = 24 小时。",
+        "type": "int",
+        "default": 86400
+    },
+    "history_discard_age": {
+        "description": "⑥ 历史分层 / 摘要自动抛弃阈值（秒）",
+        "hint": "v0.6.0+ 持久化的 tier2/tier3 摘要若 updated 时间距今超过此值，自动清空（载入时 / 写入时 / 注入时都检查）。默认 86400 = 1 天。",
+        "type": "int",
+        "default": 86400
+    },
     "bot_relevance_keywords": {
         "description": "⑤ 判断上下文信号 / bot 相关关键词",
         "hint": "逗号分隔。判断模型上下文会用这些关键词估算当前消息是否与 bot 相关，例如提到 bot 名字、机器人、插件、模型、配置等。",

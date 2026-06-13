@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.5.3 - 2026-06-13
+
+- **修复：主语指向判断错误**（`_bot_relevance` / `_conversation_opening` 误把群友间互动当成对 bot 的邀请）。
+- `MessageRecord` 新增 4 个仅内存字段：`reply_to_sender_id` / `mentioned_user_ids` / `is_at_bot` / `is_at_all`，用于在窗口内追踪每条消息的地址信号。
+- 新增 `_extract_addressee_info(event, group_messages)` helper：用鸭子类型（hasattr qq/id）遍历 chain 提取 @/Reply 组件，webchat 等无 At 组件的平台安全降级为 `("", (), False, False)`。
+- 新增 `_addressee_label(...)` helper：把地址信号转成自然语言标签（"明确 @ bot" / "@全体成员" / "回复某条消息" / "@ 了 N 个群友" / "未明确指向"）。
+- **`_bot_relevance` 改写**：优先级 `@bot` > `@全体` > 回复 bot > 关键词；**关键词命中但同时 @ 了别人 → 降级为 weak**（关键修复：A 对 B 提到 bot 不再被当 strong）。
+- **`_conversation_opening` 改写**：`@bot` / `@全体` / 回复 bot + 问号 → high；**纯问号不指向 bot → medium**（不把群友互问/反问/自问当邀请）。
+- judge prompt template 新增"当前消息对象"行，把 `addressee_label` + 原始信号（`is_at_bot` / `reply_to_sender_id` / `mentioned_user_count`）都喂给判断模型，并补一行"主语指向优先级"指引。
+- `_group_to_json` 过滤 4 个新字段（不落盘，跨重启不影响）。
+- 新增 6 个单测覆盖典型翻车场景：`@bot` 无关键词 / 关键词+@别人 / 关键词+@bot / 回复 bot / 纯问号无地址 / @全体；旧 `test_conversation_opening_high_for_question` 改名为 `test_conversation_opening_question_without_addressee_is_medium`，断言从 `high` 改为 `medium`（行为修复）。
+- README 加一节"主语指向感知（v0.5.3+）"。
+
 ## v0.5.2 - 2026-06-13
 
 - 新增判断模型人格感知（`judge_persona_aware_enabled`，v0.5.2+ 默认开启）：`_judge_should_reply` 在调用 `provider.text_chat` 时传入当前会话人格的 `system_prompt`，让判断模型以人格视角评估是否该插话（冷淡人格判断阈值偏保守、活泼人格偏积极等）。

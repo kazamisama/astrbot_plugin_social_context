@@ -38,6 +38,9 @@ class _Event:
         extras: dict[str, object] | None = None,
         raw_message: dict[str, object] | None = None,
         message_type: str = "group",
+        self_id: str = "99999",
+        message_id: str = "",
+        chain: list | None = None,
     ) -> None:
         self.sender_name = sender_name
         self.sender_id = sender_id
@@ -48,7 +51,17 @@ class _Event:
         self.message_type = message_type
         self.stopped = False
         self.result = None
-        self.message_obj = type("MessageObj", (), {"raw_message": raw_message or {}})()
+        self._self_id = self_id
+        self._chain = chain if chain is not None else None
+        self.message_obj = type(
+            "MessageObj",
+            (),
+            {
+                "raw_message": raw_message or {},
+                "message_id": message_id,
+                "message": self._chain,
+            },
+        )()
 
     def get_sender_name(self) -> str:
         return self.sender_name
@@ -65,6 +78,9 @@ class _Event:
     def get_session_id(self) -> str:
         return self.unified_msg_origin
 
+    def get_self_id(self) -> str:
+        return self._self_id
+
     def is_private_chat(self) -> bool:
         return self.message_type == "private"
 
@@ -79,6 +95,18 @@ class _Event:
 
     def stop_event(self) -> None:
         self.stopped = True
+
+
+# v0.5.3+：构造带 qq 字段的鸭子类型 chain 元素（用 SimpleNamespace 避免依赖真实 At）
+from types import SimpleNamespace as _SimpleNamespace  # noqa: E402
+
+
+def _at(qq: str):
+    return _SimpleNamespace(qq=qq)
+
+
+def _reply(id_: str):
+    return _SimpleNamespace(id=id_)
 
 
 class PluginHelperTests(unittest.TestCase):
@@ -157,7 +185,8 @@ class PluginHelperTests(unittest.TestCase):
         self.assertEqual(relevance, "strong")
         self.assertIn("雪莉", reason)
 
-    def test_conversation_opening_high_for_question(self) -> None:
+    def test_conversation_opening_question_without_addressee_is_medium(self) -> None:
+        """v0.5.3+：纯问号不指向 bot → medium，不该再当 high（避免群友互问被当邀请）"""
         event = _Event(message="这个报错怎么修？")
         opening, reason = self.plugin._conversation_opening(  # type: ignore[arg-type]
             event,
@@ -165,8 +194,8 @@ class PluginHelperTests(unittest.TestCase):
             100.0,
             bot_relevance="none",
         )
-        self.assertEqual(opening, "high")
-        self.assertIn("求助", reason)
+        self.assertEqual(opening, "medium")
+        self.assertIn("未明确指向", reason)
 
     def test_judge_block_contains_social_timing_signals(self) -> None:
         event = _Event(message="雪莉这个插件怎么配置？")
@@ -189,6 +218,136 @@ class PluginHelperTests(unittest.TestCase):
         self.assertIn("插话空位：high", block)
         self.assertIn("话题热度：", block)
         self.assertIn("当前用户近期风格：", block)
+
+    # ===== v0.5.3+：主语指向感知测试 =====
+
+    def test_bot_relevance_strong_when_at_bot(self) -> None:
+        """v0.5.3+：明确 @ bot → strong（即使没关键词）"""
+        event = _Event(message="在吗", chain=[_at("99999")])
+        relevance, reason = self.plugin._bot_relevance(event, [], 100.0)  # type: ignore[arg-type]
+        self.assertEqual(relevance, "strong")
+        self.assertIn("@", reason)
+
+    def test_bot_relevance_weak_when_keyword_hits_but_at_someone_else(self) -> None:
+        """v0.5.3+：A 对 B 说"bot 这个东西你用过没"——含关键词但 @ 的是别人 → weak"""
+        event = _Event(
+            message="bot 这个东西你用过没",
+            chain=[_at("10002")],  # @ 群友 bob
+        )
+        relevance, reason = self.plugin._bot_relevance(event, [], 100.0)  # type: ignore[arg-type]
+        self.assertEqual(relevance, "weak")
+        self.assertIn("bot 关键词", reason)
+
+    def test_bot_relevance_strong_when_reply_to_bot(self) -> None:
+        """v0.5.3+：消息是回复 bot 的追问 → strong（哪怕无关键词）"""
+        group = GroupContext(
+            messages=deque([
+                MessageRecord(
+                    sender_id="99999",  # bot self_id
+                    sender_name="bot",
+                    content="hi",
+                    timestamp=50.0,
+                    is_bot=True,
+                    message_id="m-bot-1",
+                )
+            ])
+        )
+        self.plugin.groups["group-1"] = group
+        event = _Event(
+            message="继续说",
+            chain=[_reply("m-bot-1")],
+            self_id="99999",
+        )
+        relevance, reason = self.plugin._bot_relevance(event, list(group.messages), 100.0)  # type: ignore[arg-type]
+        self.assertEqual(relevance, "strong")
+        self.assertIn("回复 bot", reason)
+
+    def test_conversation_opening_high_when_at_bot(self) -> None:
+        """v0.5.3+：@ bot 不含问号也该是 high（明确点名）"""
+        event = _Event(message="出来", chain=[_at("99999")])
+        opening, reason = self.plugin._conversation_opening(  # type: ignore[arg-type]
+            event, [], 100.0, bot_relevance="none",
+        )
+        self.assertEqual(opening, "high")
+        self.assertIn("@", reason)
+
+    def test_conversation_opening_high_when_keyword_no_addressee(self) -> None:
+        """v0.5.3+：bot_relevance=strong 时就算没 @bot 也 high（强相关兜底）"""
+        event = _Event(message="雪莉这个插件怎么配置？")
+        opening, reason = self.plugin._conversation_opening(  # type: ignore[arg-type]
+            event, [], 100.0, bot_relevance="strong",  # 模拟 _bot_relevance 已判 strong
+        )
+        self.assertEqual(opening, "high")
+        self.assertIn("bot 相关", reason)
+
+    def test_judge_block_includes_addressee_label(self) -> None:
+        """v0.5.3+：judge block 必须出现"当前消息对象" + addressee_label"""
+        event = _Event(message="在吗", chain=[_at("99999")])
+        group = GroupContext(
+            messages=deque([
+                MessageRecord(
+                    sender_id="99999",
+                    sender_name="bot",
+                    content="hi",
+                    timestamp=9999999999.0,
+                    is_bot=True,
+                )
+            ])
+        )
+        self.plugin.groups["group-1"] = group
+        self.plugin.users["10001"] = UserContext(user_id="10001")
+
+        block = self.plugin.build_judge_prompt_block("group-1", event, max_age=9999999999)  # type: ignore[arg-type]
+        self.assertIn("当前消息对象", block)
+        self.assertIn("明确 @ bot", block)
+        self.assertIn("is_at_bot=True", block)
+
+    def test_group_to_json_omits_addressee_fields(self) -> None:
+        """v0.5.3+：主语指向字段不落盘"""
+        group = GroupContext(
+            messages=deque([
+                MessageRecord(
+                    sender_id="10001",
+                    sender_name="alice",
+                    content="x",
+                    timestamp=1.0,
+                    is_bot=False,
+                    reply_to_sender_id="99999",
+                    mentioned_user_ids=("10002",),
+                    is_at_bot=True,
+                    is_at_all=False,
+                )
+            ])
+        )
+        data = self.plugin._group_to_json(group)
+        m = data["messages"][0]
+        self.assertNotIn("reply_to_sender_id", m)
+        self.assertNotIn("mentioned_user_ids", m)
+        self.assertNotIn("is_at_bot", m)
+        self.assertNotIn("is_at_all", m)
+
+    def test_addressee_label_variants(self) -> None:
+        """v0.5.3+：标签生成覆盖 5 种典型场景"""
+        self.assertIn("@全体", self.plugin._addressee_label(
+            is_at_bot=False, is_at_all=True, reply_to_sender_id="",
+            mentioned_user_ids=(), is_bot_sender=False,
+        ))
+        self.assertIn("明确 @ bot", self.plugin._addressee_label(
+            is_at_bot=True, is_at_all=False, reply_to_sender_id="",
+            mentioned_user_ids=(), is_bot_sender=False,
+        ))
+        self.assertIn("回复", self.plugin._addressee_label(
+            is_at_bot=False, is_at_all=False, reply_to_sender_id="10002",
+            mentioned_user_ids=(), is_bot_sender=False,
+        ))
+        self.assertIn("@ 了", self.plugin._addressee_label(
+            is_at_bot=False, is_at_all=False, reply_to_sender_id="",
+            mentioned_user_ids=("10002", "10003"), is_bot_sender=False,
+        ))
+        self.assertIn("未明确指向", self.plugin._addressee_label(
+            is_at_bot=False, is_at_all=False, reply_to_sender_id="",
+            mentioned_user_ids=(), is_bot_sender=False,
+        ))
 
     def test_topic_heat_trend_rising(self) -> None:
         messages = [

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.1 - 2026-06-13
+
+- 将 `judge_enabled` 默认值改为 `true`：插件默认启用"自主判断是否回复"功能，呼应 v0.4.0 起的自主判断能力。
+- 同步更新 `judge_enabled` 配置项 hint，说明 v0.5.1+ 默认开启以及如何关闭（设 false 或留空 `judge_provider_id`）。
+- 备注：`reply_inject_enabled` 自 v0.4.7（commit 71a7c9f）起已为默认 false，本次未动。
+- README / `_conf_schema.json` 同步更新，回归测试无变化（仅默认值翻转，未引入新行为）。
+
 ## v0.5.0 - 2026-06-13
 
 - 新增 `output_step` 模块与 `reply` 智能引用步骤：bot 准备回复时，若原消息之后被插了 ≥ `reply_step_threshold` 条新消息，会在回复头部插入 `Reply(id=原消息id)` 组件，可选附加 `At` 提醒原消息发送者。

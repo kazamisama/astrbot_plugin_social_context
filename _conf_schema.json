@@ -61,9 +61,9 @@
     },
     "judge_enabled": {
         "description": "④ 自主判断与主动回复 / 启用自主判断是否回复",
-        "hint": "开启后，插件会监听群消息并调用所选判断模型决定是否主动触发正式回复。默认关闭，避免与其他主动回复插件冲突。",
+        "hint": "v0.5.1+ 默认开启。开启后，插件会监听群消息并调用所选判断模型决定是否主动触发正式回复。如不需要请在配置里把本项设为 false，或留空 judge_provider_id 让它走不到判断模型调用。",
         "type": "bool",
-        "default": false
+        "default": true
     },
     "judge_provider_id": {
         "description": "④ 自主判断与主动回复 / 判断模型提供商",

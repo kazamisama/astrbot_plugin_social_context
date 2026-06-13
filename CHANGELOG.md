@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.6.1 - 2026-06-13
+
+- **新增：历史压缩（D 方案）**——tier2 走 on-message lazy + interval 节流，tier3 走单一定时器。
+- `GroupContext` 新增 1 个仅内存字段 `history_compress_inflight: bool`，防止同一群并发压缩。
+- `__init__` 新增 `self._compress_tasks: set[asyncio.Task]` + `self._tier3_task: asyncio.Task | None`。
+- 新增 8 个配置项：
+  - `history_compress_tier2_enabled`（默认 true）—— tier2 压缩总开关
+  - `history_compress_tier2_on_message`（默认 true）—— on-message lazy 触发
+  - `history_compress_tier2_interval`（默认 300）—— 最小压缩间隔
+  - `history_compress_tier2_max_chars`（默认 200）—— 摘要字数
+  - `history_compress_tier3_enabled`（默认 true）—— tier3 压缩总开关
+  - `history_compress_tier3_interval`（默认 3600）—— 后台循环间隔
+  - `history_compress_tier3_max_chars`（默认 300）—— 摘要字数
+  - `history_compress_timeout`（默认 10.0）—— LLM 单次压缩超时
+- 新增方法：
+  - `_build_compress_prompt(old, msgs, max_chars)`：构造压缩 prompt，冷启动时提示"首次压缩"
+  - `_call_compress_llm(prompt, timeout)`：调 `judge_provider_id` provider 跑压缩，失败 / 超时 / 空返 None
+  - `_compress_history_tier2(group_id)`：tier2 压缩主体（fire-and-forget 调用方），更新 `history_summary` + `history_summary_updated`
+  - `_compress_history_tier3(group_id)`：tier3 压缩主体（定时器调用方），输入是 tier2 摘要 + tier3 窗口新消息
+  - `_format_tier3_messages(msgs)`：tier3 文本格式化（每条截前 60 字）
+  - `_maybe_schedule_tier2_compress(group_id)`：D 方案 tier2 触发点
+  - `_ensure_tier3_loop()`：懒启动 tier3 后台循环（首条群消息时启动）
+  - `_tier3_compress_loop()`：tier3 循环（`asyncio.CancelledError` 优雅退出）
+- `on_group_message` 在 `prune` + `_save_if_needed` 之后调 `_ensure_tier3_loop()` + `_maybe_schedule_tier2_compress()`。
+- `terminate` 先 cancel tier3 task + drain compress_tasks，再 save（避免压缩覆盖持久化）。
+- 失败兜底：LLM 返 None 时不更新 `updated` 时间，下次再试；旧摘要保留。
+- 注入防护：tier2 压缩入参先过 `_scan_variables`（截断 + 风险标记），与 judge prompt 走同一套。
+- 新增 12 个单测：冷启动 prompt / 有旧摘要 / 缺 provider / provider 不存在 / 成功 / 超时 / 关开关不触发 / interval 不触发 / inflight 不并发 / 失败保旧 / 成功更新 / tier3 空消息跳过。
+- metadata.yaml v0.6.0 → v0.6.1，CHANGELOG / README / `_conf_schema.json` 同步。
+
 ## v0.6.0 - 2026-06-13
 
 - **新增：历史时间三层结构**（本版本先落地"时间结构"层，LLM 压缩内容留待下个 patch）。

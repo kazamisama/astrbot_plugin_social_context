@@ -464,6 +464,185 @@ class PluginHelperTests(unittest.TestCase):
         # 空摘要时显示 "暂无" 占位
         self.assertIn("暂无", block)
 
+    # ===== v0.6.1+：历史压缩（D 方案）测试 =====
+
+    def test_build_compress_prompt_cold_start(self) -> None:
+        """v0.6.1+：无旧摘要时 prompt 提示「首次压缩」"""
+        msgs = [
+            MessageRecord("u1", "alice", "hi", 100.0, False),
+            MessageRecord("u2", "bob",   "yo", 200.0, False),
+        ]
+        prompt = self.plugin._build_compress_prompt("", msgs, 200)
+        self.assertIn("首次压缩", prompt)
+        self.assertIn("alice", prompt)
+        self.assertIn("bob", prompt)
+        self.assertIn("200", prompt)  # max_chars 占位
+
+    def test_build_compress_prompt_with_old(self) -> None:
+        """v0.6.1+：有旧摘要时正常拼接"""
+        msgs = [MessageRecord("u1", "alice", "x", 100.0, False)]
+        prompt = self.plugin._build_compress_prompt(
+            "之前在聊配置问题", msgs, 150,
+        )
+        self.assertIn("之前在聊配置问题", prompt)
+        self.assertNotIn("首次压缩", prompt)
+
+    def test_call_compress_llm_no_provider(self) -> None:
+        """v0.6.1+：judge_provider_id 为空时返 None"""
+        self.plugin.config = _Cfg({"judge_provider_id": ""})
+        result = asyncio.run(self.plugin._call_compress_llm("hello", 1.0))
+        self.assertIsNone(result)
+
+    def test_call_compress_llm_provider_missing(self) -> None:
+        """v0.6.1+：provider 不存在时返 None"""
+        self.plugin.config = _Cfg({"judge_provider_id": "non-existent"})
+        # context 没有 get_provider_by_id
+        self.plugin.context = type("Ctx", (), {})()
+        result = asyncio.run(self.plugin._call_compress_llm("hello", 1.0))
+        self.assertIsNone(result)
+
+    def test_call_compress_llm_success(self) -> None:
+        """v0.6.1+：provider 返回有效内容时直接返回"""
+        class _Resp:
+            completion_text = "这是压缩后的摘要"
+        class _Prov:
+            async def text_chat(self, **kwargs):
+                return _Resp()
+        class _Ctx:
+            def get_provider_by_id(self, pid):
+                return _Prov()
+        self.plugin.config = _Cfg({"judge_provider_id": "ok"})
+        self.plugin.context = _Ctx()
+        result = asyncio.run(self.plugin._call_compress_llm("hello", 1.0))
+        self.assertEqual(result, "这是压缩后的摘要")
+
+    def test_call_compress_llm_timeout(self) -> None:
+        """v0.6.1+：超时返 None（不抛）"""
+        import asyncio as _aio
+        class _SlowProv:
+            async def text_chat(self, **kwargs):
+                await _aio.sleep(5)
+                return None
+        class _Ctx:
+            def get_provider_by_id(self, pid):
+                return _SlowProv()
+        self.plugin.config = _Cfg({"judge_provider_id": "ok"})
+        self.plugin.context = _Ctx()
+        result = _aio.run(self.plugin._call_compress_llm("hello", 0.1))
+        self.assertIsNone(result)
+
+    def test_maybe_schedule_tier2_disabled(self) -> None:
+        """v0.6.1+：关掉 tier2 压缩时什么都不做"""
+        self.plugin.config = _Cfg({
+            "history_compress_tier2_enabled": False,
+            "history_compress_tier2_on_message": True,
+        })
+        self.plugin._compress_tasks = set()
+        self.plugin._maybe_schedule_tier2_compress("group-1")
+        self.assertEqual(len(self.plugin._compress_tasks), 0)
+
+    def test_maybe_schedule_tier2_interval_not_met(self) -> None:
+        """v0.6.1+：距上次压缩 < interval 时不触发"""
+        self.plugin.config = _Cfg({
+            "history_compress_tier2_enabled": True,
+            "history_compress_tier2_on_message": True,
+            "history_compress_tier2_interval": 300,
+        })
+        self.plugin._compress_tasks = set()
+        # 上次压缩刚刚发生
+        g = GroupContext(history_summary_updated=__import__("time").time())
+        self.plugin.groups["group-1"] = g
+        self.plugin._maybe_schedule_tier2_compress("group-1")
+        self.assertEqual(len(self.plugin._compress_tasks), 0)
+
+    def test_maybe_schedule_tier2_inflight(self) -> None:
+        """v0.6.1+：inflight 时不并发触发"""
+        self.plugin.config = _Cfg({
+            "history_compress_tier2_enabled": True,
+            "history_compress_tier2_on_message": True,
+            "history_compress_tier2_interval": 0,
+        })
+        self.plugin._compress_tasks = set()
+        g = GroupContext(
+            history_summary_updated=__import__("time").time() - 1000,
+            history_compress_inflight=True,  # 已在跑
+        )
+        self.plugin.groups["group-1"] = g
+        self.plugin._maybe_schedule_tier2_compress("group-1")
+        self.assertEqual(len(self.plugin._compress_tasks), 0)
+
+    def test_compress_tier2_failure_preserves_old(self) -> None:
+        """v0.6.1+：LLM 返 None 时不更新 updated，下次还能再试"""
+        # 直接走 async 方法
+        class _Prov:
+            async def text_chat(self, **kwargs):
+                return None
+        class _Ctx:
+            def get_provider_by_id(self, pid):
+                return _Prov()
+        self.plugin.config = _Cfg({"judge_provider_id": "ok"})
+        self.plugin.context = _Ctx()
+        self.plugin.groups["group-1"] = GroupContext(
+            history_summary="旧摘要",
+            history_summary_updated=1.0,  # 远古
+            messages=deque([MessageRecord("u1", "alice", "x", 100.0, False)]),
+        )
+        before_updated = self.plugin.groups["group-1"].history_summary_updated
+        before_summary = self.plugin.groups["group-1"].history_summary
+        asyncio.run(self.plugin._compress_history_tier2("group-1"))
+        # updated 应该没变（保留旧摘要）
+        self.assertEqual(
+            self.plugin.groups["group-1"].history_summary_updated, before_updated
+        )
+        self.assertEqual(
+            self.plugin.groups["group-1"].history_summary, before_summary
+        )
+        # inflight 已清
+        self.assertFalse(self.plugin.groups["group-1"].history_compress_inflight)
+
+    def test_compress_tier2_success_updates(self) -> None:
+        """v0.6.1+：LLM 返有效内容时更新 summary + updated"""
+        class _Resp:
+            completion_text = "新的压缩摘要：alice 问了 X 问题"
+        class _Prov:
+            async def text_chat(self, **kwargs):
+                return _Resp()
+        class _Ctx:
+            def get_provider_by_id(self, pid):
+                return _Prov()
+        self.plugin.config = _Cfg({"judge_provider_id": "ok"})
+        self.plugin.context = _Ctx()
+        self.plugin.groups["group-1"] = GroupContext(
+            history_summary="旧",
+            history_summary_updated=0.0,
+            messages=deque([
+                MessageRecord("u1", "alice", "x", 100.0, False),
+                MessageRecord("u2", "bob",   "y", 200.0, False),
+            ]),
+        )
+        asyncio.run(self.plugin._compress_history_tier2("group-1"))
+        g = self.plugin.groups["group-1"]
+        self.assertIn("新的压缩摘要", g.history_summary)
+        self.assertEqual(g.history_summary_updated, 200.0)  # 最新一条 ts
+        self.assertFalse(g.history_compress_inflight)
+
+    def test_compress_tier3_skips_when_no_input(self) -> None:
+        """v0.6.1+：tier3 窗口无新消息且无 tier2 摘要时跳过"""
+        self.plugin.config = _Cfg({"history_compress_tier3_enabled": True})
+        self.plugin.groups["group-1"] = GroupContext(
+            messages=deque(),  # 空
+        )
+        asyncio.run(self.plugin._compress_history_tier3("group-1"))
+        g = self.plugin.groups["group-1"]
+        # 没调用过 LLM（updated 仍 0）
+        self.assertEqual(g.history_daily_updated, 0.0)
+        self.assertEqual(g.history_daily_summary, "")
+
+    def test_format_tier3_messages_empty(self) -> None:
+        """v0.6.1+：tier3 消息列表为空时返回"无新增消息"占位"""
+        out = self.plugin._format_tier3_messages([])
+        self.assertIn("无新增消息", out)
+
     def test_topic_heat_trend_rising(self) -> None:
         messages = [
             MessageRecord("10001", "alice", "旧消息", 20.0, False),

@@ -12,6 +12,7 @@ AstrBot Social Context
 from __future__ import annotations
 
 import json
+import asyncio
 import re
 import time
 from collections import Counter, deque
@@ -161,6 +162,8 @@ class GroupContext:
     history_summary_updated: float = 0.0
     history_daily_summary: str = ""
     history_daily_updated: float = 0.0
+    # v0.6.1+：压缩并发保护（同一群同时只能有 1 个压缩在跑；不持久化）
+    history_compress_inflight: bool = False
 
     def reset_daily_if_needed(self) -> None:
         today = date.today().isoformat()
@@ -213,6 +216,9 @@ class SocialContextPlugin(Star):
         self._last_save_time = 0.0
         # persona 拉取缓存：umo -> (persona_id, system_prompt, fetched_at)
         self._persona_cache: dict[str, tuple[str | None, str | None, float]] = {}
+        # v0.6.1+：tier2 fire-and-forget 任务池 + tier3 后台循环
+        self._compress_tasks: set[asyncio.Task] = set()
+        self._tier3_task: asyncio.Task | None = None
 
         self.data_dir = self._resolve_data_dir()
         self.state_path = self._resolve_state_path()
@@ -551,6 +557,249 @@ class SocialContextPlugin(Star):
             return f"约 {int(age_seconds // 3600)} 小时前（tier3 摘要）"
         return f"超过 {int(t3 // 3600)} 小时（已超出三层范围）"
 
+    # ===== v0.6.1+：历史压缩（D 方案：tier2 on-message + tier3 后台循环）=====
+
+    HISTORY_COMPRESS_PROMPT = (
+        "你是群聊历史上下文压缩助手。基于「旧摘要」和「新增消息」，"
+        "输出一份更新后的简洁摘要，专门服务于「判断 bot 是否该插话」这一用途。\n"
+        "必须保留的信息：\n"
+        "- 群友在聊什么话题、谁和谁对话、bot 之前是否参与/承诺过什么\n"
+        "- 是否有未完成的事 / 待回复的提问 / 失约的承诺\n"
+        "- 群友关系变化（谁在跟谁互动、是否在 @ 谁）\n"
+        "必须丢掉的信息：闲聊表情包、重复的客套、跟插话判断无关的细节。\n"
+        "硬约束：输出不超过 {max_chars} 字，简洁到扫一眼就能看全。\n"
+        "只输出更新后的摘要文本，不要 JSON，不要任何前缀说明。\n"
+        "\n旧摘要：\n{old}\n"
+        "\n新增消息（按时间顺序，已脱敏处理）：\n{new_messages}\n"
+    )
+
+    def _build_compress_prompt(self, old: str, new_messages: list, max_chars: int) -> str:
+        """构造压缩 prompt。
+
+        new_messages 已脱敏（content 可能为空，因为 v0.4.3 起不持久化正文）。
+        压缩场景下，我们重新从当前 group 读出来时可以拿到 content。
+        """
+        if not new_messages:
+            return ""
+        lines: list[str] = []
+        for m in new_messages:
+            # 优先用 content（如果有），否则只显示时间 + sender
+            content = (getattr(m, "content", "") or "").strip()
+            sender_name = getattr(m, "sender_name", "") or getattr(m, "sender_id", "未知")
+            if content:
+                lines.append(f"- [{int(m.timestamp)}] {sender_name}: {content}")
+            else:
+                lines.append(f"- [{int(m.timestamp)}] {sender_name}: (无内容)")
+        new_block = "\n".join(lines)
+        # 旧摘要为空时提示是"首次压缩"
+        old_block = old.strip() if old and old.strip() else "（暂无旧摘要，这是首次压缩）"
+        return self.HISTORY_COMPRESS_PROMPT.format(
+            max_chars=max_chars,
+            old=old_block,
+            new_messages=new_block,
+        )
+
+    async def _call_compress_llm(self, prompt: str, timeout: float) -> str | None:
+        """调 judge_provider_id 对应的 provider 跑一次压缩。
+
+        失败 / 超时 / 返回空 都返 None，调用方按"保留旧摘要"处理。
+        """
+        if not prompt:
+            return None
+        provider_id = str(self.config.get("judge_provider_id", "") or "").strip()
+        if not provider_id:
+            return None
+        try:
+            provider = self.context.get_provider_by_id(provider_id)
+        except Exception as exc:
+            logger.warning(f"[social_context] 获取压缩 provider 失败: {exc}")
+            return None
+        if not provider:
+            return None
+        try:
+            response = await asyncio.wait_for(
+                provider.text_chat(
+                    prompt=prompt,
+                    contexts=[],
+                    image_urls=[],
+                    system_prompt="",
+                ),
+                timeout=timeout,
+            )
+            content = (getattr(response, "completion_text", "") or "").strip()
+            return content or None
+        except asyncio.TimeoutError:
+            logger.warning(f"[social_context] 历史压缩 LLM 超时（{timeout}s）")
+            return None
+        except Exception as exc:
+            logger.warning(f"[social_context] 历史压缩 LLM 异常: {exc}")
+            return None
+
+    async def _compress_history_tier2(self, group_id: str) -> None:
+        """tier2 压缩入口（fire-and-forget 调用方）。"""
+        group = self.groups.get(group_id)
+        if not group:
+            return
+        if group.history_compress_inflight:
+            return
+        if not self._cfg_bool("history_compress_tier2_enabled", True):
+            return
+        interval = self._cfg_int("history_compress_tier2_interval", 300, 1)
+        max_chars = self._cfg_int("history_compress_tier2_max_chars", 200, 50)
+        timeout = self._cfg_float("history_compress_timeout", 10.0, 1.0)
+        now = time.time()
+        if (now - group.history_summary_updated) < interval:
+            return
+        # 找 tier2 窗口里 > 上次更新时间 的消息
+        msgs = self._get_messages_in_tier(
+            group, now, 2, since_timestamp=group.history_summary_updated
+        )
+        # 还要算上"上次更新时间之后进入 tier1 但还没压过"的（防冷启动漏压）
+        if not msgs:
+            return
+        group.history_compress_inflight = True
+        try:
+            # 先扫一遍注入风险
+            safe_msgs = self._scan_variables(
+                [{"ts": int(m.timestamp), "name": m.sender_name, "content": (m.content or "")[:200]} for m in msgs],
+                keys=("name", "content"),
+            )
+            # 重新映射回 MessageRecord 形态（只用 ts/name/content，content 可能被截断/打标）
+            class _LiteRec:
+                __slots__ = ("timestamp", "sender_name", "content")
+                def __init__(self, ts, name, content):
+                    self.timestamp = ts
+                    self.sender_name = name
+                    self.content = content
+            lite = [_LiteRec(d["ts"], d["name"], d["content"]) for d in safe_msgs]
+            prompt = self._build_compress_prompt(
+                group.history_summary, lite, max_chars
+            )
+            new_summary = await self._call_compress_llm(prompt, timeout)
+            if new_summary:
+                # 截断保护
+                if len(new_summary) > max_chars * 2:
+                    new_summary = new_summary[: max_chars * 2]
+                group.history_summary = new_summary
+                # 更新 updated 到本次新增消息里最新一条的时间戳
+                group.history_summary_updated = max(m.timestamp for m in msgs)
+            else:
+                # 失败：不更新 updated，下次再试
+                logger.debug("[social_context] tier2 压缩未拿到结果，保留旧摘要")
+        finally:
+            group.history_compress_inflight = False
+
+    async def _compress_history_tier3(self, group_id: str) -> None:
+        """tier3 压缩入口（定时器调用方）。输入是 tier2 摘要 + tier3 窗口内新消息。"""
+        group = self.groups.get(group_id)
+        if not group:
+            return
+        if group.history_compress_inflight:
+            return
+        if not self._cfg_bool("history_compress_tier3_enabled", True):
+            return
+        interval = self._cfg_int("history_compress_tier3_interval", 3600, 1)
+        max_chars = self._cfg_int("history_compress_tier3_max_chars", 300, 50)
+        timeout = self._cfg_float("history_compress_timeout", 10.0, 1.0)
+        now = time.time()
+        if (now - group.history_daily_updated) < interval:
+            return
+        # tier3 摘要的输入：tier2 当前摘要 + tier3 窗口里 > 上次更新时间 的消息
+        msgs = self._get_messages_in_tier(
+            group, now, 3, since_timestamp=group.history_daily_updated
+        )
+        if not msgs and not group.history_summary:
+            return
+        group.history_compress_inflight = True
+        try:
+            # tier3 的"旧摘要"是历史 tier3 摘要，参考信息加上 tier2 摘要作为"更新源"
+            old_block = group.history_daily_summary or "（暂无 tier3 旧摘要）"
+            if group.history_summary:
+                old_block += f"\n\n近期补充（tier2 摘要）：\n{group.history_summary}"
+            prompt = self.HISTORY_COMPRESS_PROMPT.format(
+                max_chars=max_chars,
+                old=old_block,
+                new_messages=self._format_tier3_messages(msgs),
+            )
+            new_summary = await self._call_compress_llm(prompt, timeout)
+            if new_summary:
+                if len(new_summary) > max_chars * 2:
+                    new_summary = new_summary[: max_chars * 2]
+                group.history_daily_summary = new_summary
+                group.history_daily_updated = now
+            else:
+                logger.debug("[social_context] tier3 压缩未拿到结果，保留旧摘要")
+        finally:
+            group.history_compress_inflight = False
+
+    def _format_tier3_messages(self, msgs: list) -> str:
+        """tier3 输入用：消息列表 → 简洁文本（带时间标签 + sender）。"""
+        if not msgs:
+            return "（无新增消息，仅基于旧摘要刷新）"
+        lines: list[str] = []
+        for m in msgs:
+            content = (getattr(m, "content", "") or "").strip()
+            sender = getattr(m, "sender_name", "") or getattr(m, "sender_id", "未知")
+            # tier3 时段消息通常很多，每条只截前 60 字
+            if content and len(content) > 60:
+                content = content[:60] + "…"
+            lines.append(f"- [{int(m.timestamp)}] {sender}: {content or '(无内容)'}")
+        return "\n".join(lines)
+
+    def _maybe_schedule_tier2_compress(self, group_id: str) -> None:
+        """D 方案 tier2 触发点：on-message 后调用。fire-and-forget。"""
+        if not self._cfg_bool("history_compress_tier2_enabled", True):
+            return
+        if not self._cfg_bool("history_compress_tier2_on_message", True):
+            return
+        # 简单节流：上次压缩在 interval 内就别发
+        group = self.groups.get(group_id)
+        if not group:
+            return
+        interval = self._cfg_int("history_compress_tier2_interval", 300, 1)
+        if (time.time() - group.history_summary_updated) < interval:
+            return
+        if group.history_compress_inflight:
+            return
+        # fire-and-forget
+        try:
+            task = asyncio.create_task(self._compress_history_tier2(group_id))
+            self._compress_tasks.add(task)
+            task.add_done_callback(self._compress_tasks.discard)
+        except RuntimeError:
+            # 事件循环已关闭（插件 terminate 后还在跑），静默丢弃
+            pass
+
+    def _ensure_tier3_loop(self) -> None:
+        """懒启动 tier3 后台循环。在 on_group_message 里调用。"""
+        if self._tier3_task is not None and not self._tier3_task.done():
+            return
+        if not self._cfg_bool("history_compress_tier3_enabled", True):
+            return
+        try:
+            self._tier3_task = asyncio.create_task(self._tier3_compress_loop())
+        except RuntimeError:
+            # 无事件循环或已关闭
+            pass
+
+    async def _tier3_compress_loop(self) -> None:
+        """D 方案 tier3 循环：定时遍历所有群。"""
+        try:
+            while True:
+                interval = self._cfg_int("history_compress_tier3_interval", 3600, 60)
+                await asyncio.sleep(interval)
+                if not self._cfg_bool("history_compress_tier3_enabled", True):
+                    continue
+                for gid in list(self.groups.keys()):
+                    try:
+                        await self._compress_history_tier3(gid)
+                    except Exception as exc:
+                        logger.warning(f"[social_context] tier3 压缩失败 [{gid}]: {exc}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning(f"[social_context] tier3 循环异常退出: {exc}")
+
     def _is_private_event(self, event: AstrMessageEvent) -> bool:
         try:
             if event.is_private_chat():
@@ -663,6 +912,10 @@ class SocialContextPlugin(Star):
 
         group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
         self._save_if_needed()
+
+        # v0.6.1+：D 方案触发点——on-message 后看是否要压 tier2 / 启动 tier3 后台
+        self._ensure_tier3_loop()
+        self._maybe_schedule_tier2_compress(group_id)
 
         if not is_bot:
             await self._maybe_trigger_autonomous_reply(event, group_id)
@@ -1570,4 +1823,15 @@ class SocialContextPlugin(Star):
         }
 
     async def terminate(self):
+        # v0.6.1+：先取消后台任务，避免 save 期间被压缩覆盖
+        if self._tier3_task is not None and not self._tier3_task.done():
+            self._tier3_task.cancel()
+            try:
+                await self._tier3_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        for task in list(self._compress_tasks):
+            if not task.done():
+                task.cancel()
+        self._compress_tasks.clear()
         self._save_if_needed(force=True)

@@ -150,6 +150,54 @@
         "type": "int",
         "default": 86400
     },
+    "history_compress_tier2_enabled": {
+        "description": "⑦ 历史压缩 / tier2 压缩总开关",
+        "hint": "v0.6.1+。关闭后 tier2 永远只显示「暂无」，不会调 LLM。需要 judge_provider_id 已配置才有效。",
+        "type": "bool",
+        "default": true
+    },
+    "history_compress_tier2_on_message": {
+        "description": "⑦ 历史压缩 / tier2 在消息进入时按需压缩",
+        "hint": "v0.6.1+。true = on-message lazy + interval 节流（D 方案）；false = 完全不自动压，只能靠 tier3 兜底。",
+        "type": "bool",
+        "default": true
+    },
+    "history_compress_tier2_interval": {
+        "description": "⑦ 历史压缩 / tier2 最小压缩间隔（秒）",
+        "hint": "v0.6.1+。on-message 模式下，距上次 tier2 压缩超过此值才会触发。默认 300 = 5 分钟。",
+        "type": "int",
+        "default": 300
+    },
+    "history_compress_tier2_max_chars": {
+        "description": "⑦ 历史压缩 / tier2 摘要最大字符数",
+        "hint": "v0.6.1+。压缩 prompt 里要求模型输出不超过这么多字，LLM 失败时也按此阈值截断旧摘要。",
+        "type": "int",
+        "default": 200
+    },
+    "history_compress_tier3_enabled": {
+        "description": "⑦ 历史压缩 / tier3 压缩总开关",
+        "hint": "v0.6.1+。关闭后 tier3 永远只显示「暂无」。",
+        "type": "bool",
+        "default": true
+    },
+    "history_compress_tier3_interval": {
+        "description": "⑦ 历史压缩 / tier3 后台循环间隔（秒）",
+        "hint": "v0.6.1+。D 方案里 tier3 由单一定时器遍历各群触发。默认 3600 = 1 小时。",
+        "type": "int",
+        "default": 3600
+    },
+    "history_compress_tier3_max_chars": {
+        "description": "⑦ 历史压缩 / tier3 摘要最大字符数",
+        "hint": "v0.6.1+。tier3 摘要的目标字数。",
+        "type": "int",
+        "default": 300
+    },
+    "history_compress_timeout": {
+        "description": "⑦ 历史压缩 / LLM 单次压缩超时（秒）",
+        "hint": "v0.6.1+。超过此时间视作失败，保留旧摘要。",
+        "type": "float",
+        "default": 10.0
+    },
     "bot_relevance_keywords": {
         "description": "⑤ 判断上下文信号 / bot 相关关键词",
         "hint": "逗号分隔。判断模型上下文会用这些关键词估算当前消息是否与 bot 相关，例如提到 bot 名字、机器人、插件、模型、配置等。",

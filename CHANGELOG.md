@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.4 - 2026-06-14
+
+- **修复：`_cfg_float` 拒绝 NaN/inf**——`main.py:_cfg_float` 之前用 `float()` 把配置值转数值，**NaN 和 inf 都是合法 float**（`float("nan")` / `float("inf")` 都不抛），`max(min_value, NaN)` 还会把 NaN 传染到下游，esm v0.3.0 的 `try_apply_signal` 对非有限 intensity 也会抛 `ValueError`。现在加 `math.isfinite` 守卫，NaN/inf 一律回退到 `default`。
+  - 触发场景：手编 `_conf_schema.json` 时 `"intensity": "nan"` / `"inf"`，或上游异常给非有限值。修复前会被 `try_apply_signal` 自身捕获并 WARNING（双保险），主流程不炸但 esm 日志会有噪声；修复后根本到不了 esm，噪声消失。
+  - 9 个新单元测试覆盖：合法 finite 回归、字符串数字 parse、`"nan"` / `"inf"` / `"-inf"` 字符串回退、原始 `float('nan')` 回退、完全不能 parse 的字符串走原 TypeError/ValueError 分支、NaN + min_value 边界（先 default 后 clamp）、`min_value=None` 不走 max 分支。
+- ruff 0 issue。metadata.yaml v0.8.3 → v0.8.4。
+
 ## v0.8.3 - 2026-06-14
 
 - **修复：适配 emotion_state_machine v0.3.0 的 HTML 哨兵包裹**——ESM 自 v0.3.0 起给 `build_prompt_block` 输出包了 `<!-- esm:emotion-block:start -->` / `<!-- esm:emotion-block:end -->` HTML 注释哨兵（用于自身 `_inject_emotion_block` 的去重/替换）。`mixins/emotion_bridge.py` `_build_emotion_block` 现在在末尾用正则剥离哨兵后再返回，**judge 模型的 system prompt 看不到 HTML 标记**，只看到纯情绪状态描述。

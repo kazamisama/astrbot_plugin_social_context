@@ -12,6 +12,7 @@ AstrBot Social Context
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections import Counter, deque
 from pathlib import Path
@@ -216,6 +217,12 @@ class SocialContextPlugin(
         try:
             value = float(self.config.get(key, default))
         except (TypeError, ValueError):
+            value = default
+        # v0.8.4：拒绝 NaN/inf。
+        # 手编配置（"nan"/"inf"）或异常上游可能产生非有限值。
+        # NaN 通过 max() 比较时不参与，会污染下游；esm v0.3.0 的
+        # `try_apply_signal` 对非有限 intensity 也会抛 ValueError。
+        if not math.isfinite(value):
             value = default
         if min_value is not None:
             value = max(min_value, value)

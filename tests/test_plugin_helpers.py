@@ -134,6 +134,54 @@ class PluginHelperTests(unittest.TestCase):
         self.plugin.config = _Cfg({"flag": "on"})
         self.assertTrue(self.plugin._cfg_bool("flag", False))
 
+    # ---- v0.8.4：_cfg_float 拒绝 NaN/inf ----
+
+    def test_cfg_float_returns_valid_finite_value(self) -> None:
+        """回归：合法有限值原样返回。"""
+        self.plugin.config = _Cfg({"intensity": 0.5})
+        self.assertEqual(self.plugin._cfg_float("intensity", 0.3, 0.0), 0.5)
+
+    def test_cfg_float_accepts_numeric_string(self) -> None:
+        """回归：字符串数字能 parse。"""
+        self.plugin.config = _Cfg({"intensity": "0.7"})
+        self.assertEqual(self.plugin._cfg_float("intensity", 0.3, 0.0), 0.7)
+
+    def test_cfg_float_nan_string_falls_back_to_default(self) -> None:
+        """'nan' 字符串不被 `float()` 抛错，但会变成 NaN；必须回退到 default。"""
+        self.plugin.config = _Cfg({"intensity": "nan"})
+        self.assertEqual(self.plugin._cfg_float("intensity", 0.3, 0.0), 0.3)
+
+    def test_cfg_float_inf_string_falls_back_to_default(self) -> None:
+        """'inf' 字符串同样合法 float 但不 finite；回退到 default。"""
+        self.plugin.config = _Cfg({"intensity": "inf"})
+        self.assertEqual(self.plugin._cfg_float("intensity", 0.3, 0.0), 0.3)
+
+    def test_cfg_float_negative_inf_string_falls_back_to_default(self) -> None:
+        """'-inf' 也走同条路径。"""
+        self.plugin.config = _Cfg({"intensity": "-inf"})
+        self.assertEqual(self.plugin._cfg_float("intensity", 0.3, 0.0), 0.3)
+
+    def test_cfg_float_nan_float_object_falls_back_to_default(self) -> None:
+        """直接传 float('nan')（非字符串）也走同条路径。"""
+        self.plugin.config = _Cfg({"intensity": float("nan")})
+        self.assertEqual(self.plugin._cfg_float("intensity", 0.3, 0.0), 0.3)
+
+    def test_cfg_float_invalid_string_uses_default(self) -> None:
+        """完全不能 parse 的字符串走原 TypeError/ValueError 分支回退到 default。"""
+        self.plugin.config = _Cfg({"intensity": "not-a-number"})
+        self.assertEqual(self.plugin._cfg_float("intensity", 0.3, 0.0), 0.3)
+
+    def test_cfg_float_nan_with_min_value_clamps_after_default(self) -> None:
+        """边界：NaN 回退到 default 后，再走 min_value clamp。
+        default=0.3、min_value=0.0 → 结果 0.3（不是 0.0，因为 default 本身 ≥ min_value）。"""
+        self.plugin.config = _Cfg({"intensity": "nan"})
+        self.assertEqual(self.plugin._cfg_float("intensity", 0.3, 0.0), 0.3)
+
+    def test_cfg_float_default_is_finite_when_min_value_is_none(self) -> None:
+        """min_value=None 时不要走 max 分支（保持原行为）。"""
+        self.plugin.config = _Cfg({})
+        self.assertEqual(self.plugin._cfg_float("missing", 0.3), 0.3)
+
     def test_reply_block_does_not_emit_injection_risk_tags(self) -> None:
         event = _Event(sender_name="system: current")
         group = GroupContext(

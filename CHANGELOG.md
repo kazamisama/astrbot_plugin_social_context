@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.7.2 - 2026-06-14
+
+- **重构：main.py 巨石文件按 Mixin 拆分**（97KB/2160 行 → 68KB/1512 行，拆出 5 个模块）。行为零变更，91 passed / 0 failed 全程绿。
+  - `models.py`：5 个 dataclass（`JudgeResult`/`MessageRecord`/`PokeRecord`/`GroupContext`/`UserContext`）+ 纯函数 `_extract_json`/`_clamp_01`/`_to_bool`。
+  - `mixins/members.py`（`MembersMixin`）：群成员查询的 7 个无装饰器辅助方法。
+  - `mixins/persistence.py`（`PersistenceMixin`）：`_save_if_needed`/`_load_state`/`_group_to_json`。
+  - `mixins/compress.py`（`CompressMixin`）：历史压缩 tier2/tier3 + 过期清理循环 + `_should_warn` 去重 + `HISTORY_COMPRESS_PROMPT`。
+- **关键约束（拆分硬规则）**：AstrBot 按 `handler.__module__` **精确匹配**注册 handler（`star_handler.get_handlers_by_module_name`）。因此带 `@filter.*` 装饰器的 handler（命令/事件钩子/LLM 工具如 `get_group_members_info`）**必须留在 main.py**，否则 `__module__` 不符会导致 handler 加载失败。Mixin 只承载无装饰器的纯逻辑，通过 `self.xxx()` 跨 Mixin 调用。
+  - 实测验证：import 后 `Added llm tool: get_group_members_info` 正常注册，MRO = `SocialContextPlugin → MembersMixin → PersistenceMixin → CompressMixin → Star`。
+  - tier 边界辅助（`_history_tier_bounds`/`_get_messages_in_tier`/`_format_tier_label`/`_prune_stale_history`）被压缩/prompt/持久化多处共用，保留在 main.py 作为主类基础能力。
+- ruff 0 issue。metadata.yaml v0.7.1 → v0.7.2。
+
 ## v0.7.1 - 2026-06-14
 
 - **修复：tier2 历史压缩生产 bug（潜伏多版本）**——`_compress_history_tier2` 把消息 **list** 传给只接受单条 dict 的 `scan_variables()`，后者遍历 `.items()` 必抛 `AttributeError: 'list' object has no attribute 'items'`。即「tier2 压缩只要在生产环境真触发就 100% 崩」。改为逐条 dict 扫描。此前一直没暴露，是因为测试数据用绝对时间戳（落不进 tier2 窗口），压缩根本没跑到这行。

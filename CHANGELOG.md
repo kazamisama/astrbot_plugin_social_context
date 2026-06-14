@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.7.1 - 2026-06-14
+
+- **修复：tier2 历史压缩生产 bug（潜伏多版本）**——`_compress_history_tier2` 把消息 **list** 传给只接受单条 dict 的 `scan_variables()`，后者遍历 `.items()` 必抛 `AttributeError: 'list' object has no attribute 'items'`。即「tier2 压缩只要在生产环境真触发就 100% 崩」。改为逐条 dict 扫描。此前一直没暴露，是因为测试数据用绝对时间戳（落不进 tier2 窗口），压缩根本没跑到这行。
+- **修复：测试套件 14 个失败全部修正**——此前 CHANGELOG 多版本记为「历史遗留 mock 写法问题、与本次无关」，实为真 bug。根因是环境从未安装 pytest，没人真跑过。现 **91 passed / 0 failed**。具体：
+  - `setUp` 用 `__new__` 跳过 `__init__`，未补 v0.6.x~v0.7.0 新增的 7 个运行时字段（`_compress_warn_last` / `_persona_cache` / `_compress_tasks` / `_tier3_task` / `_stale_prune_task` / `_member_cache` / `_last_save_time`），导致走 `_should_warn`/压缩/清理路径的用例全 `AttributeError`。
+  - `__import__("unittest.mock").patch` 写法错误（返回顶层 `unittest`，无 `.patch`）→ 改 `from unittest import mock` 后用 `mock.patch.object`（5 处）。
+  - 同步上下文里 `asyncio.create_task` 无 running loop → 移进 async 包装；`_await_task` 的 `except Exception` 改 `except BaseException`（`CancelledError` 不是 `Exception`）。
+  - `_stale_prune_interval` 断言写错：`600//4=150` 未触下限，实现正确，断言改为 150 并补一条真触下限的用例（200→60）。
+  - prune loop 时序：实现是「先 sleep 后 prune」，mock 首次 sleep 即 cancel 导致 prune 跑不到 → 改 mock 为「首次放行、二次 cancel」。
+  - `test_compress_tier2_success_updates` 用绝对时间戳（落不进 tier2 窗口）→ 改用相对 `now` 构造消息。
+  - `test_stale_prune_loop_skips_when_persist_disabled` 断言期望值笔误（`history_daily_summary` 应为 `"也应保留"` 误写成 `"应保留"`）。
+- 工程：补装 pytest 后方能真跑测试，建议固化进开发依赖。ruff 0 issue。
+- metadata.yaml v0.7.0 → v0.7.1。
+
 ## v0.7.0 - 2026-06-13
 
 - **特性：整合「群成员查询」插件能力**——把独立的 `astrbot_plugin_group_member`（原作者糯米茨，魔改 v0.2.0-magic）功能整体并入 social_context，新增按需主动查询群成员名册的能力。social_context 此前只感知「说过话的人」，整合后可主动获取「群里所有人」。

@@ -906,11 +906,14 @@ class SocialContextPlugin(Star):
             return
         group.history_compress_inflight = True
         try:
-            # 先扫一遍注入风险
-            safe_msgs = self._scan_variables(
-                [{"ts": int(m.timestamp), "name": m.sender_name, "content": (m.content or "")[:200]} for m in msgs],
-                keys=("name", "content"),
-            )
+            # 先逐条扫一遍注入风险（scan_variables 针对单条 dict，列表需逐项扫）
+            safe_msgs = [
+                self._scan_variables(
+                    {"ts": int(m.timestamp), "name": m.sender_name, "content": (m.content or "")[:200]},
+                    keys=("name", "content"),
+                )
+                for m in msgs
+            ]
             # 重新映射回 MessageRecord 形态（只用 ts/name/content，content 可能被截断/打标）
             class _LiteRec:
                 __slots__ = ("timestamp", "sender_name", "content")

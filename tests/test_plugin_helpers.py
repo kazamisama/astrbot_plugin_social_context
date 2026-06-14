@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 import unittest
+from unittest import mock
 from collections import deque
 from pathlib import Path
 
@@ -115,6 +117,14 @@ class PluginHelperTests(unittest.TestCase):
         self.plugin.config = _Cfg({})
         self.plugin.groups = {}
         self.plugin.users = {}
+        # __new__ 跳过 __init__，手动补全 __init__ 里初始化的运行时字段
+        self.plugin._last_save_time = 0.0
+        self.plugin._persona_cache = {}
+        self.plugin._compress_tasks = set()
+        self.plugin._tier3_task = None
+        self.plugin._compress_warn_last = {}
+        self.plugin._stale_prune_task = None
+        self.plugin._member_cache = {}
 
     def test_cfg_bool_parses_string_false(self) -> None:
         self.plugin.config = _Cfg({"flag": "false"})
@@ -612,18 +622,22 @@ class PluginHelperTests(unittest.TestCase):
                 return _Prov()
         self.plugin.config = _Cfg({"judge_provider_id": "ok"})
         self.plugin.context = _Ctx()
+        # tier 按 (now - ts) 相对年龄分档，tier2 默认窗口 180~1800s。
+        # 用相对 now 构造消息，并把 updated 设到 interval 外才会触发压缩。
+        now = time.time()
+        ts_old, ts_new = now - 600.0, now - 300.0
         self.plugin.groups["group-1"] = GroupContext(
             history_summary="旧",
             history_summary_updated=0.0,
             messages=deque([
-                MessageRecord("u1", "alice", "x", 100.0, False),
-                MessageRecord("u2", "bob",   "y", 200.0, False),
+                MessageRecord("u1", "alice", "x", ts_old, False),
+                MessageRecord("u2", "bob",   "y", ts_new, False),
             ]),
         )
         asyncio.run(self.plugin._compress_history_tier2("group-1"))
         g = self.plugin.groups["group-1"]
         self.assertIn("新的压缩摘要", g.history_summary)
-        self.assertEqual(g.history_summary_updated, 200.0)  # 最新一条 ts
+        self.assertEqual(g.history_summary_updated, ts_new)  # 最新一条 ts
         self.assertFalse(g.history_compress_inflight)
 
     def test_compress_tier3_skips_when_no_input(self) -> None:
@@ -676,12 +690,12 @@ class PluginHelperTests(unittest.TestCase):
         """v0.6.2+：done_callback 对 cancelled 任务不报"""
         async def _t():
             raise asyncio.CancelledError()
-        task = asyncio.create_task(_t())
-        # 让 task 自然 cancelled
-        try:
-            asyncio.run(self._await_task(task))
-        except Exception:
-            pass
+
+        async def _run():
+            task = asyncio.create_task(_t())
+            await self._await_task(task)
+            return task
+        task = asyncio.run(_run())
         # 不应该抛
         self.plugin._log_compress_task_exception(task)
 
@@ -689,15 +703,19 @@ class PluginHelperTests(unittest.TestCase):
     async def _await_task(t):
         try:
             await t
-        except Exception:
+        except BaseException:  # 含 CancelledError（继承 BaseException）
             pass
 
     def test_log_compress_task_exception_logs_on_failure(self) -> None:
         """v0.6.2+：task 异常时被记录（不抛）"""
         async def _failing():
             raise RuntimeError("boom")
-        task = asyncio.create_task(_failing())
-        asyncio.run(self._await_task(task))
+
+        async def _run():
+            task = asyncio.create_task(_failing())
+            await self._await_task(task)
+            return task
+        task = asyncio.run(_run())
         # 不抛即可（logger.warning 内部吃掉）
         self.plugin._log_compress_task_exception(task)
 
@@ -722,7 +740,7 @@ class PluginHelperTests(unittest.TestCase):
         })
 
         # 跑循环直到第一次 sleep 异常 → 自愈 → 第二次 sleep 被取消
-        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+        with mock.patch.object(_aio, "sleep", _mock_sleep):
             try:
                 _aio.run(self.plugin._tier3_compress_loop())
             except _aio.CancelledError:
@@ -736,8 +754,11 @@ class PluginHelperTests(unittest.TestCase):
         # 默认 86400 → 86400/4=21600 clamp 到 3600
         self.plugin.config = _Cfg({"history_discard_age": 86400})
         self.assertEqual(self.plugin._stale_prune_interval(), 3600)
-        # 配很短（10min）→ 150 clamp 下限 60
+        # 配中等（10min）→ 600/4=150，未触下限，原样返回 150
         self.plugin.config = _Cfg({"history_discard_age": 600})
+        self.assertEqual(self.plugin._stale_prune_interval(), 150)
+        # 配很短（200s）→ 200/4=50 clamp 到下限 60
+        self.plugin.config = _Cfg({"history_discard_age": 200})
         self.assertEqual(self.plugin._stale_prune_interval(), 60)
         # 配很长（一周）→ 151200 clamp 上限 3600
         self.plugin.config = _Cfg({"history_discard_age": 604800})
@@ -762,13 +783,14 @@ class PluginHelperTests(unittest.TestCase):
         sleep_calls = {"n": 0}
 
         async def _mock_sleep(_):
+            # 实现是“先 sleep 后 prune”，首次放行让 prune 跑一轮，二次才 cancel
             sleep_calls["n"] += 1
-            if sleep_calls["n"] >= 1:
+            if sleep_calls["n"] >= 2:
                 raise _aio.CancelledError()
 
         # 强制关掉 save 避免污染测试环境
         self.plugin._save_if_needed = lambda force=False: None  # type: ignore[assignment]
-        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+        with mock.patch.object(_aio, "sleep", _mock_sleep):
             try:
                 _aio.run(self.plugin._stale_history_prune_loop())
             except _aio.CancelledError:
@@ -791,11 +813,15 @@ class PluginHelperTests(unittest.TestCase):
             history_daily_updated=0.0,
         )
 
+        sleep_calls = {"n": 0}
+
         async def _mock_sleep(_):
-            raise _aio.CancelledError()
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                raise _aio.CancelledError()
 
         self.plugin._save_if_needed = lambda force=False: None  # type: ignore[assignment]
-        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+        with mock.patch.object(_aio, "sleep", _mock_sleep):
             try:
                 _aio.run(self.plugin._stale_history_prune_loop())
             except _aio.CancelledError:
@@ -823,10 +849,14 @@ class PluginHelperTests(unittest.TestCase):
             history_daily_updated=now - 86400 * 5,
         )
 
-        async def _mock_sleep(_):
-            raise _aio.CancelledError()
+        sleep_calls = {"n": 0}
 
-        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+        async def _mock_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                raise _aio.CancelledError()
+
+        with mock.patch.object(_aio, "sleep", _mock_sleep):
             try:
                 _aio.run(self.plugin._stale_history_prune_loop())
             except _aio.CancelledError:
@@ -835,7 +865,7 @@ class PluginHelperTests(unittest.TestCase):
         g = self.plugin.groups["g1"]
         # 摘要没被动过（persist 关掉了整个 prune 流程）
         self.assertEqual(g.history_summary, "应保留")
-        self.assertEqual(g.history_daily_summary, "应保留")
+        self.assertEqual(g.history_daily_summary, "也应保留")
 
     def test_stale_prune_loop_force_saves_on_actual_clear(self) -> None:
         """v0.6.4+：真清掉东西时 _save_if_needed(force=True) 会被调用"""
@@ -859,10 +889,14 @@ class PluginHelperTests(unittest.TestCase):
             # 不真写盘
         self.plugin._save_if_needed = _spy_save  # type: ignore[assignment]
 
-        async def _mock_sleep(_):
-            raise _aio.CancelledError()
+        sleep_calls = {"n": 0}
 
-        with __import__("unittest.mock").patch.object(_aio, "sleep", _mock_sleep):
+        async def _mock_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                raise _aio.CancelledError()
+
+        with mock.patch.object(_aio, "sleep", _mock_sleep):
             try:
                 _aio.run(self.plugin._stale_history_prune_loop())
             except _aio.CancelledError:

@@ -157,6 +157,11 @@ class EmotionBridgeMixin:
             避免每条 bot 回复都打一次。
 
         降级：emotion 不可用 / signal 非法 / 抛异常都静默跳过。
+        v0.8.1+：
+        - signal 被 disabled_signals 拒绝时 logger.warning 一次（60s 同 signal 去重），
+          配置级问题不能静默。
+        - 用 emo.try_apply_signal 替代 emo.apply_signal：ESM 自带的 hot-path
+          安全变体会处理 unknown signal / 非法 intensity，配套 WARNING 日志。
         """
         if not self._cfg_bool("emotion_self_reply_signal_enabled", True):
             return
@@ -166,11 +171,30 @@ class EmotionBridgeMixin:
         intensity = self._cfg_float("emotion_self_reply_intensity", 0.3, 0.0)
         min_interval = self._cfg_float("emotion_self_reply_min_interval_seconds", 30.0, 0.0)
 
-        # 先确认 emotion 可用：缺失/异常时直接返回，不消耗节流时间戳，
-        # 避免插件暂时下线后被自身节流锁住。
+        # 关键顺序：先确认 plugin 可用，再写节流时间戳。否则 plugin 缺失时
+        # 会消耗节流窗口，导致 plugin 恢复后仍被自己节流锁住。
         emo = self._get_emotion_plugin()
         if emo is None:
             return
+
+        # v0.8.1+：预校验 signal 是否被 ESM 的 disabled_signals 禁用，禁用时 warn
+        # 一次（60s 同 signal 去重）。配置级问题不应静默，60s 节流避免刷屏。
+        enabled_check = getattr(emo, "is_signal_enabled", None)
+        if callable(enabled_check):
+            try:
+                if not enabled_check(signal):
+                    now = time.time()
+                    last = self._emotion_disabled_warn_last.get(signal, 0.0)
+                    if now - last >= 60.0:
+                        logger.warning(
+                            f"[social_context] emotion_self_reply_signal={signal!r} "
+                            "被 ESM 的 disabled_signals 禁用，跳过打 signal。"
+                            "如需启用请从 ESM 配置的 disabled_signals 中移除。"
+                        )
+                        self._emotion_disabled_warn_last[signal] = now
+                    return
+            except Exception as exc:  # pragma: no cover - 防御性兜底
+                logger.debug(f"[social_context] is_signal_enabled 检查失败: {exc}")
 
         if min_interval > 0:
             now = time.time()
@@ -179,8 +203,11 @@ class EmotionBridgeMixin:
                 return
             self._emotion_signal_last[scope] = now
 
+        # v0.8.1+：用 try_apply_signal 替代 apply_signal：unknown signal /
+        # 非法 intensity 会被 ESM 自身捕获并 WARNING，避免抛到 social_context。
+        apply = getattr(emo, "try_apply_signal", None) or emo.apply_signal
         try:
-            emo.apply_signal(
+            apply(
                 scope=scope,
                 user_id=user_id,
                 signal=signal,

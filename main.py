@@ -103,6 +103,8 @@ class SocialContextPlugin(
         self._member_cache: dict[str, tuple[float, list, bool]] = {}
         # v0.8.0+：emotion_state_machine 桥接：bot 主动回复后打轻量 signal 的 scope 节流表
         self._emotion_signal_last: dict[str, float] = {}
+        # v0.8.1+：emotion_state_machine 桥接：signal 被 disabled_signals 拒绝时 warn 去重表
+        self._emotion_disabled_warn_last: dict[str, float] = {}
 
         self.data_dir = self._resolve_data_dir()
         self.state_path = self._resolve_state_path()

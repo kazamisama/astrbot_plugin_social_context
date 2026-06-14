@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.1 - 2026-06-14
+
+- **升级：emotion_state_machine v0.3.0 公共 API 适配**——ESM 在 v0.3.0 暴露了 3 个新公共 API（`try_apply_signal` / `is_signal_enabled` / `list_disabled_signals`），social_context 桥接切换到新 API 优先 + 旧 API 降级：
+  - **`try_apply_signal` 优先 + `apply_signal` 降级**——ESM 自带的 hot-path 安全变体，unknown signal / 非法 intensity 自己捕获并 WARNING，不抛到 social_context。`apply_signal` 仍保留 fallback，v0.2.0 老 ESM 不受影响。
+  - **`is_signal_enabled` 预校验 + 60s warn 去重**——`emotion_self_reply_signal` 配的 signal 名被 ESM 的 `disabled_signals` 列表禁用时，logger.warning 提示一次（60s 同 signal 去重，避免刷屏）。配置级问题不应静默吞。
+- 内部字段：`__init__` 新增 `self._emotion_disabled_warn_last: dict[str, float] = {}`（60s warn 去重表）。
+- 行为保持：emotion 插件缺失/未注册/抛异常时所有接入点静默降级，social_context 主流程不受影响。
+- 测试：22 → 26 个用例（新增 `test_signal_skipped_when_disabled_in_esm` / `test_signal_disabled_warn_throttled_60s` / `test_signal_calls_try_apply_signal_not_apply_signal` / `test_signal_falls_back_to_apply_signal_when_try_missing`）。118 → 122 passed / 0 failed。
+- ruff 0 issue。metadata.yaml v0.8.0 → v0.8.1。
+
 ## v0.8.0 - 2026-06-14
 
 - **特性：情绪状态机集成（social_context ↔ emotion_state_machine 可选桥接）**——把情绪引擎 `astrbot_plugin_emotion_state_machine` 的公共 API 接入 social_context，让社交上下文与情绪状态在同一 scope 下互相滋养。emotion 插件**完全可选**，缺失/未注册/抛异常时所有接入点静默降级，social_context 主流程不受影响。

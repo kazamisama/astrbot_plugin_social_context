@@ -317,6 +317,15 @@ social_context 计算 scope 时优先调用 emotion 自己的 `get_scope(event)`
 
 把对应开关设为 `false` 即可单独关掉该接入点，无需卸载 emotion 插件。三个开关**全部独立**，可以任意组合。
 
+### ESM v0.3.0+ 增强（v0.8.1+）
+
+桥接自动消费 ESM v0.3.0 的新公共 API，老 ESM v0.2.0 仍能跑（向后兼容）：
+
+- **`try_apply_signal` 优先 + `apply_signal` 降级**：ESM v0.3.0 的热路径安全变体会自己捕获 unknown signal / 非法 intensity 并 WARNING，social_context 这边不再有 `ValueError` 风险。
+- **`is_signal_enabled` 预校验**：social_context 在打 signal 前调一次 ESM 的 `is_signal_enabled(signal)`。如果 `emotion_self_reply_signal` 配的 signal 名在 ESM 的 `disabled_signals` 列表里，会打一次 `logger.warning`（60s 同 signal 去重，不刷屏），然后跳过这次打 signal。
+
+老 ESM（v0.2.0）没有这两个方法 → bridge 走 `getattr(..., None) or fallback` 路径静默降级，行为同 v0.8.0。
+
 ## 设计边界
 
 v0.4.0 起插件可以可选地自主判断是否回复，但仍保持轻量定位：

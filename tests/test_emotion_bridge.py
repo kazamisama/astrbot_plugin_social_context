@@ -49,6 +49,7 @@ class _FakeEmotionStar:
     """Spy 形态的 emotion_state_machine star。
 
     每个方法用 SimpleNamespace 记录调用参数；可选 raise_on_* 模拟异常。
+    支持 disabled_signals 集合（v0.3.0+ 新增 is_signal_enabled / try_apply_signal）。
     """
 
     def __init__(
@@ -59,15 +60,18 @@ class _FakeEmotionStar:
         raise_on_observe: bool = False,
         raise_on_block: bool = False,
         raise_on_signal: bool = False,
+        disabled_signals: tuple[str, ...] = (),
     ) -> None:
         self._scope_for_event = scope_for_event
         self._prompt_block = prompt_block
         self._raise_on_observe = raise_on_observe
         self._raise_on_block = raise_on_block
         self._raise_on_signal = raise_on_signal
+        self._disabled_signals = {s.lower() for s in disabled_signals}
         self.observe_calls: list[dict] = []
         self.block_calls: list[dict] = []
         self.signal_calls: list[dict] = []
+        self.try_signal_calls: list[dict] = []
 
     def get_scope(self, event: object) -> str:
         return self._scope_for_event
@@ -100,6 +104,26 @@ class _FakeEmotionStar:
             raise RuntimeError("emotion apply_signal 故意失败")
         return SimpleNamespace(label="calm")
 
+    def try_apply_signal(self, *, scope, user_id, signal, intensity, reason):  # noqa: ANN001
+        """v0.3.0+ 热路径安全变体：失败时返 None（被禁用 / 未知 signal /
+        intensity 非法），不抛——ESM 自己捕获 ValueError/TypeError 并 warn。
+        """
+        self.try_signal_calls.append(
+            {
+                "scope": scope,
+                "user_id": user_id,
+                "signal": signal,
+                "intensity": intensity,
+                "reason": reason,
+            }
+        )
+        if self._raise_on_signal:
+            return None
+        return SimpleNamespace(label="calm")
+
+    def is_signal_enabled(self, signal: str) -> bool:
+        return signal.lower() not in self._disabled_signals
+
 
 def _make_plugin(config: dict | None = None) -> SocialContextPlugin:
     plugin = SocialContextPlugin.__new__(SocialContextPlugin)
@@ -109,6 +133,7 @@ def _make_plugin(config: dict | None = None) -> SocialContextPlugin:
     plugin.context = SimpleNamespace()  # 默认：get_registered_star 缺失
     # __init__ 里需要的所有运行时字段
     plugin._emotion_signal_last = {}
+    plugin._emotion_disabled_warn_last = {}
     return plugin
 
 
@@ -240,8 +265,9 @@ class EmotionBridgeTests(unittest.TestCase):
         star = _FakeEmotionStar()
         _attach_emotion(self.plugin, star)
         self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
-        self.assertEqual(len(star.signal_calls), 1)
-        call = star.signal_calls[0]
+        # v0.8.1+：调的是 try_apply_signal
+        self.assertEqual(len(star.try_signal_calls), 1)
+        call = star.try_signal_calls[0]
         self.assertEqual(call["scope"], "g-1")
         self.assertEqual(call["user_id"], "u-1")
         self.assertEqual(call["signal"], "friendly")
@@ -254,8 +280,8 @@ class EmotionBridgeTests(unittest.TestCase):
         self.plugin.config["emotion_self_reply_signal"] = "thanks"
         self.plugin.config["emotion_self_reply_intensity"] = 0.7
         self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
-        self.assertEqual(star.signal_calls[0]["signal"], "thanks")
-        self.assertAlmostEqual(star.signal_calls[0]["intensity"], 0.7)
+        self.assertEqual(star.try_signal_calls[0]["signal"], "thanks")
+        self.assertAlmostEqual(star.try_signal_calls[0]["intensity"], 0.7)
 
     def test_signal_disabled_skips(self) -> None:
         star = _FakeEmotionStar()
@@ -281,7 +307,7 @@ class EmotionBridgeTests(unittest.TestCase):
         self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
         self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
         # 节流：30s 窗口内只打一次
-        self.assertEqual(len(star.signal_calls), 1)
+        self.assertEqual(len(star.try_signal_calls), 1)
         # 节流表被写了
         self.assertIn("g-1", self.plugin._emotion_signal_last)
 
@@ -291,7 +317,7 @@ class EmotionBridgeTests(unittest.TestCase):
         self.plugin.config["emotion_self_reply_min_interval_seconds"] = 60.0
         self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
         self.plugin._apply_emotion_self_reply_signal("g-2", "u-2")
-        self.assertEqual(len(star.signal_calls), 2)
+        self.assertEqual(len(star.try_signal_calls), 2)
 
     def test_signal_throttle_zero_means_no_throttle(self) -> None:
         star = _FakeEmotionStar()
@@ -299,13 +325,14 @@ class EmotionBridgeTests(unittest.TestCase):
         self.plugin.config["emotion_self_reply_min_interval_seconds"] = 0.0
         self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
         self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
-        self.assertEqual(len(star.signal_calls), 2)
+        self.assertEqual(len(star.try_signal_calls), 2)
 
     def test_signal_raises_is_silent(self) -> None:
         star = _FakeEmotionStar(raise_on_signal=True)
         _attach_emotion(self.plugin, star)
-        # 不应抛
+        # v0.8.1+：try_apply_signal 自己捕获并返 None，外层不应再抛
         self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
+        self.assertEqual(len(star.try_signal_calls), 1)
 
     def test_signal_throttle_does_not_consume_when_plugin_missing(self) -> None:
         # emotion 缺失时调一次，节流表不应被写（避免后续插件恢复后被节流锁住）
@@ -316,7 +343,8 @@ class EmotionBridgeTests(unittest.TestCase):
         star = _FakeEmotionStar()
         _attach_emotion(self.plugin, star)
         self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
-        self.assertEqual(len(star.signal_calls), 1)
+        # v0.8.1+：调的是 try_apply_signal
+        self.assertEqual(len(star.try_signal_calls), 1)
 
     # ---- scope 路径 ----
 
@@ -358,6 +386,64 @@ class EmotionBridgeTests(unittest.TestCase):
 
     def test_emotion_star_name_constant(self) -> None:
         self.assertEqual(EMOTION_STAR_NAME, "astrbot_plugin_emotion_state_machine")
+
+    # ---- v0.8.1+：ESM v0.3.0 公共 API 适配 ----
+
+    def test_signal_skipped_when_disabled_in_esm(self) -> None:
+        """signal 在 ESM 的 disabled_signals 列表中：跳过打 signal，不调 try_apply_signal。"""
+        star = _FakeEmotionStar(disabled_signals=("friendly",))
+        _attach_emotion(self.plugin, star)
+        self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
+        # 跳过：try_apply_signal / apply_signal 都没被调到
+        self.assertEqual(star.try_signal_calls, [])
+        self.assertEqual(star.signal_calls, [])
+        # warn 去重表应被写
+        self.assertIn("friendly", self.plugin._emotion_disabled_warn_last)
+
+    def test_signal_disabled_warn_throttled_60s(self) -> None:
+        """同 signal 60s 内只 warn 一次（避免刷屏）。"""
+        star = _FakeEmotionStar(disabled_signals=("friendly",))
+        _attach_emotion(self.plugin, star)
+        # 第一次：warn
+        self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
+        first_ts = self.plugin._emotion_disabled_warn_last["friendly"]
+        # 第二次：30s 内，不应重写 warn 时间戳
+        self.plugin._emotion_disabled_warn_last["friendly"] = first_ts + 5
+        self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
+        # warn 时间戳仍是第一次 + 5（说明第二次没走 warn 分支）
+        self.assertAlmostEqual(
+            self.plugin._emotion_disabled_warn_last["friendly"], first_ts + 5
+        )
+
+    def test_signal_calls_try_apply_signal_not_apply_signal(self) -> None:
+        """ESM 暴露 try_apply_signal 时优先调用它；apply_signal 不被直接调。"""
+        star = _FakeEmotionStar()
+        _attach_emotion(self.plugin, star)
+        self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
+        self.assertEqual(len(star.try_signal_calls), 1)
+        self.assertEqual(star.try_signal_calls[0]["signal"], "friendly")
+        self.assertEqual(star.try_signal_calls[0]["reason"], "social_context_self_reply")
+        # apply_signal 不被直接调
+        self.assertEqual(star.signal_calls, [])
+
+    def test_signal_falls_back_to_apply_signal_when_try_missing(self) -> None:
+        """ESM 旧版（v0.2.x）没有 try_apply_signal 时降级到 apply_signal。
+
+        用 class attr = None 模拟「该方法在实例上不存在」：bridge 的
+        `getattr(emo, "try_apply_signal", None) or emo.apply_signal` 会
+        拿到 None，落到 apply_signal；is_signal_enabled 同理被跳过。
+        """
+        class _OldESM(_FakeEmotionStar):
+            try_apply_signal = None  # type: ignore[assignment]
+            is_signal_enabled = None  # type: ignore[assignment]
+
+        star = _OldESM()
+        _attach_emotion(self.plugin, star)
+        self.plugin._apply_emotion_self_reply_signal("g-1", "u-1")
+        # 降级到 apply_signal：spy 记录到 signal_calls
+        self.assertEqual(len(star.signal_calls), 1)
+        self.assertEqual(star.signal_calls[0]["signal"], "friendly")
+        self.assertEqual(star.try_signal_calls, [])
 
 
 if __name__ == "__main__":

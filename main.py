@@ -65,15 +65,23 @@ except ImportError:  # pragma: no cover - 兼容直接脚本方式导入 main.py
 
 try:
     from .mixins.compress import CompressMixin
+    from .mixins.emotion_bridge import EmotionBridgeMixin
     from .mixins.members import MembersMixin
     from .mixins.persistence import PersistenceMixin
 except ImportError:  # pragma: no cover - 兼容直接脚本方式导入 main.py
     from mixins.compress import CompressMixin
+    from mixins.emotion_bridge import EmotionBridgeMixin
     from mixins.members import MembersMixin
     from mixins.persistence import PersistenceMixin
 
 
-class SocialContextPlugin(MembersMixin, PersistenceMixin, CompressMixin, Star):
+class SocialContextPlugin(
+    MembersMixin,
+    EmotionBridgeMixin,
+    PersistenceMixin,
+    CompressMixin,
+    Star,
+):
     """群聊社会上下文插件。"""
 
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -93,6 +101,8 @@ class SocialContextPlugin(MembersMixin, PersistenceMixin, CompressMixin, Star):
         self._stale_prune_task: asyncio.Task | None = None
         # v0.7.0+：群成员名册内存缓存 group_id -> (timestamp, members_list, truncated)
         self._member_cache: dict[str, tuple[float, list, bool]] = {}
+        # v0.8.0+：emotion_state_machine 桥接：bot 主动回复后打轻量 signal 的 scope 节流表
+        self._emotion_signal_last: dict[str, float] = {}
 
         self.data_dir = self._resolve_data_dir()
         self.state_path = self._resolve_state_path()
@@ -663,6 +673,16 @@ class SocialContextPlugin(MembersMixin, PersistenceMixin, CompressMixin, Star):
         group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
         self._save_if_needed()
 
+        # v0.8.0+：把用户消息喂给 emotion_state_machine 观察（bot 自己的消息不喂，避免自反馈）
+        if not is_bot:
+            emo_scope = self._emotion_scope(event)
+            self._feed_emotion_observation(
+                scope=emo_scope,
+                text=content,
+                user_id=sender_id,
+                mentioned=event.is_at_or_wake_command,
+            )
+
         # v0.6.1+：D 方案触发点——on-message 后看是否要压 tier2 / 启动 tier3 后台
         self._ensure_tier3_loop()
         self._maybe_schedule_tier2_compress(group_id)
@@ -776,6 +796,11 @@ class SocialContextPlugin(MembersMixin, PersistenceMixin, CompressMixin, Star):
         context_block = self.build_judge_prompt_block(scope, event)
         if not context_block:
             context_block = "## Social Context 判断参考\n暂无可用状态。"
+
+        # v0.8.0+：拼接 emotion_state_machine 的状态块（缺失/异常时静默降级）
+        emotion_block = self._build_emotion_block(scope, str(event.get_sender_id()))
+        if emotion_block:
+            context_block = context_block + "\n\n" + emotion_block
 
         threshold = self._cfg_float("judge_reply_threshold", 0.65, 0.0)
         prompt_template = str(self.config.get("judge_decision_prompt", "") or self._default_judge_decision_prompt())
@@ -942,6 +967,15 @@ class SocialContextPlugin(MembersMixin, PersistenceMixin, CompressMixin, Star):
         ):
             chain.insert(1, AtComponent(qq=event.get_sender_id()))
             chain.insert(2, PlainComponent(text="\u200b \u200b"))
+
+        # v0.8.0+：bot 主动回复后给 emotion_state_machine 打一个轻量正向 signal
+        try:
+            self._apply_emotion_self_reply_signal(
+                scope=scope,
+                user_id=str(event.get_sender_id() or ""),
+            )
+        except Exception as exc:  # pragma: no cover - 防御性兜底
+            logger.debug(f"[social_context] emotion self-reply signal 调用失败: {exc}")
 
         logger.debug(
             f"[social_context] 智能引用：原消息 {target_id} 后被插 {pushed} 条"

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.0 - 2026-06-14
+
+- **特性：情绪状态机集成（social_context ↔ emotion_state_machine 可选桥接）**——把情绪引擎 `astrbot_plugin_emotion_state_machine` 的公共 API 接入 social_context，让社交上下文与情绪状态在同一 scope 下互相滋养。emotion 插件**完全可选**，缺失/未注册/抛异常时所有接入点静默降级，social_context 主流程不受影响。
+- 新增 `mixins/emotion_bridge.py`（`EmotionBridgeMixin`），三个接入点：
+  - **接入点 1：观察消息**（`on_group_message` 调用 `_feed_emotion_observation`）——把用户原文喂给 emotion 的 `observe_text`，让情绪引擎做信号推断。bot 自己的消息不喂，避免自反馈。
+  - **接入点 2：拼入判断模型 prompt**（`_judge_should_reply` 调用 `_build_emotion_block`）——把 emotion 的 `build_prompt_block` 拼到 `context_block` 后面，让 judge 模型也能"带着情绪"决策。注入用 emotion 自己的 `get_scope(event)` 算 scope，保证绝对一致。
+  - **接入点 3：bot 主动回复后打轻量 signal**（`on_decorating_result` 调用 `_apply_emotion_self_reply_signal`）——bot 完成回复时给 emotion 调一次 `apply_signal`（默认 `friendly` / 0.3 / scope 维度最小间隔 30 秒），对长期情绪状态做温和正反馈。**emotion 缺失时不消耗节流时间戳**，避免插件短暂下线后被自身节流锁住。
+- 新增 6 个配置项（⑩ 情绪状态机集成分组）：`emotion_observe_enabled` / `emotion_judge_inject_enabled` / `emotion_self_reply_signal_enabled` / `emotion_self_reply_signal` / `emotion_self_reply_intensity` / `emotion_self_reply_min_interval_seconds`，全部默认开启，开关齐全可逐项关闭。
+- 新增 `tests/test_emotion_bridge.py`（15KB / 27 用例）：覆盖 emotion 缺失/缺方法/抛异常/开关关闭/正常调用/scope 对齐/节流不消耗/非法 signal 等 10 类场景。
+- **修复：`_apply_emotion_self_reply_signal` 节流顺序 bug**——原先 emotion 缺失时也会写 `_emotion_signal_last[scope]`，导致插件短暂掉线后被自身节流锁住。改为先确认 emotion 可用再写时间戳。修后 118 passed / 0 failed。
+- ruff 0 issue。metadata.yaml v0.7.2 → v0.8.0。
+
 ## v0.7.2 - 2026-06-14
 
 - **重构：main.py 巨石文件按 Mixin 拆分**（97KB/2160 行 → 68KB/1512 行，拆出 5 个模块）。行为零变更，91 passed / 0 failed 全程绿。

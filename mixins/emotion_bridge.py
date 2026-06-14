@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -22,6 +23,22 @@ from astrbot.api import logger
 
 # 与 emotion_state_machine 插件的 metadata.yaml 中 name 字段一致。
 EMOTION_STAR_NAME = "astrbot_plugin_emotion_state_machine"
+# v0.8.3：astrbot_plugin_emotion_state_machine v0.3.0 wraps
+# `build_prompt_block` output in HTML-comment sentinels (see
+# `ESM_BLOCK_START` / `ESM_BLOCK_END` in emotion_engine). We strip the
+# sentinels before splicing the block onto the judge prompt so the
+# judge model only sees the inner state description, not the markup
+# markers. If the upstream sentinel format ever changes, the regex
+# below becomes a no-op and we fall back to passing the raw block
+# through — the LLM ignores HTML comments anyway, but the noise is
+# gone, which matters in the judge path (high call frequency and a
+# prompt that already contains <INJECTION_RISK>-style markers).
+ESM_SENTINEL_START = "<!-- esm:emotion-block:start -->"
+ESM_SENTINEL_END = "<!-- esm:emotion-block:end -->"
+_ESM_SENTINEL_RE = re.compile(
+    re.escape(ESM_SENTINEL_START) + r"\s*\n?(.*?)\n?\s*" + re.escape(ESM_SENTINEL_END),
+    re.DOTALL,
+)
 
 
 class EmotionBridgeMixin:
@@ -139,7 +156,13 @@ class EmotionBridgeMixin:
             return ""
         if not isinstance(block, str):
             return ""
-        return block.strip()
+        # v0.8.3：strip emotion_state_machine's HTML sentinel markers
+        # (added in esm v0.3.0) so they don't leak into the judge prompt.
+        # The regex is non-greedy and DOTALL — handles the typical
+        # `<!-- start -->\n{inner}\n<!-- end -->` shape and any whitespace
+        # variant. If the format ever drifts, the regex misses and
+        # `block` passes through unchanged (LLM ignores HTML comments).
+        return _ESM_SENTINEL_RE.sub(r"\1", block).strip()
 
     # ------------------------------------------------------------------
     # 接入点 3：bot 主动回复后打轻量 signal（on_decorating_result 调用）

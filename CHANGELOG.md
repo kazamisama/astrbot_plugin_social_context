@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.3 - 2026-06-14
+
+- **修复：适配 emotion_state_machine v0.3.0 的 HTML 哨兵包裹**——ESM 自 v0.3.0 起给 `build_prompt_block` 输出包了 `<!-- esm:emotion-block:start -->` / `<!-- esm:emotion-block:end -->` HTML 注释哨兵（用于自身 `_inject_emotion_block` 的去重/替换）。`mixins/emotion_bridge.py` `_build_emotion_block` 现在在末尾用正则剥离哨兵后再返回，**judge 模型的 system prompt 看不到 HTML 标记**，只看到纯情绪状态描述。
+  - judge 路径特别值得做这一步：调用频率远高于 proactive_reply 路径（每条群消息都会判一次），每次省 ~60 token 累积可观；且 judge prompt 已经有 `<INJECTION_RISK>` 之类反注入标记，HTML 哨兵加进去既增加视觉噪声，也可能在未来 prompt 安全扫描里误命中。
+  - 哨兵格式常量（`ESM_SENTINEL_START` / `ESM_SENTINEL_END`）定义在模块级，`re.escape` 后做非贪婪 + DOTALL 匹配，容忍空行/前后空白变体。哨兵格式若未来变更，正则失配会自然降级为「原样透传」—— LLM 忽略 HTML 注释，不会爆。
+- 测试：125 → 128 个用例（新增 `test_block_strips_sentinels` / `test_block_strips_sentinels_extra_whitespace` / `test_block_passes_through_when_no_sentinels`）。128 passed / 0 failed。
+- ruff 0 issue。metadata.yaml v0.8.2 → v0.8.3。
+
 ## v0.8.2 - 2026-06-14
 
 - **修复：tier3 压缩入参注入防护缺口**——`_compress_history_tier3` 之前只把 sender_name / content 拼进 LLM prompt，绕过 `_scan_variables`。恶意用户在 tier3 窗口（30min~24h）发指令类昵称/内容，会被 LLM **字面照抄**进 `history_daily_summary`，污染所有下游读 `history_summary_tier3` 的判断模型（窗口长达 24h）。现在与 tier2 走同一套 `_scan_variables`（name + content 都过 `<INJECTION_RISK>` 包裹）。

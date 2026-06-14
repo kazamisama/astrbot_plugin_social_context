@@ -259,6 +259,50 @@ class EmotionBridgeTests(unittest.TestCase):
         _attach_emotion(self.plugin, star)
         self.assertEqual(self.plugin._build_emotion_block("g-1", "u-1"), "")
 
+    # ---- v0.8.3：strip esm v0.3.0 HTML sentinel markers ----
+
+    def test_block_strips_sentinels(self) -> None:
+        """esm v0.3.0 wraps the block in `<!-- esm:emotion-block:start/end -->`.
+
+        We must strip the markers before splicing into the judge prompt.
+        """
+        raw = (
+            "<!-- esm:emotion-block:start -->\n"
+            "## Bot Emotion State\nhappy\n"
+            "<!-- esm:emotion-block:end -->"
+        )
+        star = _FakeEmotionStar(prompt_block=raw)
+        _attach_emotion(self.plugin, star)
+        block = self.plugin._build_emotion_block("g-1", "u-1")
+        self.assertEqual(block, "## Bot Emotion State\nhappy")
+        # No trace of the markers in the returned text.
+        self.assertNotIn("esm:emotion-block", block)
+        self.assertNotIn("<!--", block)
+        self.assertNotIn("-->", block)
+
+    def test_block_strips_sentinels_extra_whitespace(self) -> None:
+        """Sentinels should still be stripped even if the upstream block
+        uses unusual whitespace (extra blank lines, leading/trailing space).
+        """
+        raw = (
+            "  <!-- esm:emotion-block:start -->\n\n"
+            "  ## Bot Emotion State\nwarm\n\n"
+            "  <!-- esm:emotion-block:end -->\n"
+        )
+        star = _FakeEmotionStar(prompt_block=raw)
+        _attach_emotion(self.plugin, star)
+        block = self.plugin._build_emotion_block("g-1", "u-1")
+        self.assertEqual(block, "## Bot Emotion State\nwarm")
+
+    def test_block_passes_through_when_no_sentinels(self) -> None:
+        """If the upstream ever drops the markers (or returns plain text),
+        we pass the block through unchanged. Defensive against format drift.
+        """
+        star = _FakeEmotionStar(prompt_block="## Bot Emotion State\nnaked")
+        _attach_emotion(self.plugin, star)
+        block = self.plugin._build_emotion_block("g-1", "u-1")
+        self.assertEqual(block, "## Bot Emotion State\nnaked")
+
     # ---- 接入点 3：apply_signal ----
 
     def test_signal_calls_emotion_with_config(self) -> None:

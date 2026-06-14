@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.2 - 2026-06-14
+
+- **修复：tier3 压缩入参注入防护缺口**——`_compress_history_tier3` 之前只把 sender_name / content 拼进 LLM prompt，绕过 `_scan_variables`。恶意用户在 tier3 窗口（30min~24h）发指令类昵称/内容，会被 LLM **字面照抄**进 `history_daily_summary`，污染所有下游读 `history_summary_tier3` 的判断模型（窗口长达 24h）。现在与 tier2 走同一套 `_scan_variables`（name + content 都过 `<INJECTION_RISK>` 包裹）。
+- **加固：`_format_tier3_messages` 支持 `max_total_chars` 总量截断**——之前只对单条消息截 60 字符，长窗口 + 高频群（tier3 默认 24h）单次 prompt 可能塞 3KB+ 爆 token。现在以 `history_compress_tier3_max_chars` 作为输入总字符上限，与输出限制对齐；判断时机放在 `append` 之前，严格保证 `len(out) ≤ max_total_chars`。
+- 测试：122 → 125 个用例（新增 `test_format_tier3_messages_caps_total_chars` / `test_format_tier3_messages_no_cap_keeps_all` / `test_compress_history_tier3_scans_injection`）。122 → 125 passed / 0 failed。
+- ruff 0 issue。metadata.yaml v0.8.1 → v0.8.2。
+
 ## v0.8.1 - 2026-06-14
 
 - **升级：emotion_state_machine v0.3.0 公共 API 适配**——ESM 在 v0.3.0 暴露了 3 个新公共 API（`try_apply_signal` / `is_signal_enabled` / `list_disabled_signals`），social_context 桥接切换到新 API 优先 + 旧 API 降级：

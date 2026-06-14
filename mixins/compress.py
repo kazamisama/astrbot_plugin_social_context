@@ -212,6 +212,34 @@ class CompressMixin:
             return
         group.history_compress_inflight = True
         try:
+            # v0.8.2+：tier3 入参也走注入扫描（与 tier2 一致）。
+            # 昵称 / 消息原文进入摘要 prompt 前先用 <INJECTION_RISK> 包裹可疑片段，
+            # 避免恶意用户在 tier3 窗口里通过昵称 / 消息污染历史摘要，进而污染
+            # 下游判断模型读到的 history_summary_tier3 字段。
+            class _LiteRec:
+                __slots__ = ("timestamp", "sender_name", "content")
+                def __init__(self, ts, name, content):
+                    self.timestamp = ts
+                    self.sender_name = name
+                    self.content = content
+            safe_msgs = [
+                _LiteRec(
+                    int(m.timestamp),
+                    d["name"],
+                    d["content"],
+                )
+                for m in msgs
+                for d in [
+                    self._scan_variables(
+                        {
+                            "ts": int(m.timestamp),
+                            "name": m.sender_name,
+                            "content": (m.content or "")[:200],
+                        },
+                        keys=("name", "content"),
+                    )
+                ]
+            ]
             # tier3 的"旧摘要"是历史 tier3 摘要，参考信息加上 tier2 摘要作为"更新源"
             old_block = group.history_daily_summary or "（暂无 tier3 旧摘要）"
             if group.history_summary:
@@ -219,7 +247,11 @@ class CompressMixin:
             prompt = self.HISTORY_COMPRESS_PROMPT.format(
                 max_chars=max_chars,
                 old=old_block,
-                new_messages=self._format_tier3_messages(msgs),
+                # v0.8.2+：用 max_chars 作为输入总字符上限，与输出限制对齐，
+                # 避免长窗口 + 高频群单次 prompt 爆 token。
+                new_messages=self._format_tier3_messages(
+                    safe_msgs, max_total_chars=max_chars
+                ),
             )
             new_summary = await self._call_compress_llm(prompt, timeout)
             if new_summary:
@@ -232,18 +264,32 @@ class CompressMixin:
         finally:
             group.history_compress_inflight = False
 
-    def _format_tier3_messages(self, msgs: list) -> str:
-        """tier3 输入用：消息列表 → 简洁文本（带时间标签 + sender）。"""
+    def _format_tier3_messages(
+        self,
+        msgs: list,
+        max_total_chars: int | None = None,
+    ) -> str:
+        """tier3 输入用：消息列表 → 简洁文本（带时间标签 + sender）。
+
+        v0.8.2+：可传入 max_total_chars 控制输出总字符上限。判断放在 append 之前，
+        保证最终输出总长严格 ≤ max_total_chars。默认 None 表示不限制。
+        """
         if not msgs:
             return "（无新增消息，仅基于旧摘要刷新）"
         lines: list[str] = []
+        total = 0
         for m in msgs:
             content = (getattr(m, "content", "") or "").strip()
             sender = getattr(m, "sender_name", "") or getattr(m, "sender_id", "未知")
             # tier3 时段消息通常很多，每条只截前 60 字
             if content and len(content) > 60:
                 content = content[:60] + "…"
-            lines.append(f"- [{int(m.timestamp)}] {sender}: {content or '(无内容)'}")
+            line = f"- [{int(m.timestamp)}] {sender}: {content or '(无内容)'}"
+            # 截断判断放在 append 之前：单条 line 就超上限也直接吞掉（不破坏截断语义）
+            if max_total_chars is not None and total + len(line) > max_total_chars:
+                break
+            lines.append(line)
+            total += len(line)
         return "\n".join(lines)
 
     def _maybe_schedule_tier2_compress(self, group_id: str) -> None:

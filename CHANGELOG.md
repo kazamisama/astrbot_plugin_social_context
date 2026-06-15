@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.5 - 2026-06-15
+
+- **修复：第二人称「你」被误判成在跟 bot 说话**——判断模型只拿到孤立的当前消息 + 聚合统计（活跃人数/话题热度），看不到逐条对话原文。群友说「你今天怎么不来」这类带「你」但无 @、无引用回复的句子时，judge LLM 缺少指代锚点，倾向把「你」代入成 bot，导致误触发回复。
+  - **方案 A（治本）：注入最近对话原文**——新增 `_format_recent_dialog`，把内存窗口最近 N 条原文按时间正序、bot 发言标注为 `bot` 拼进 judge prompt（`recent_dialog` 变量），让模型能判断「你」指向谁。原文走 `_scan_variables` 注入扫描，不落盘。
+  - **方案 B（软约束）：第二人称判定规则**——judge 模板 + 决策 prompt 各加一条：出现「你/你们」不代表在跟 bot 说话，需结合对话原文判断；无明确 @ bot / 回复 bot / 点名时，带「你」的句子默认视为群友间对话，`should_reply` 偏向 false。
+  - 新增配置 `judge_context_recent_lines`（默认 8，设 0 关闭）。
+- **修复：引用回复 bot 时主语判不出来**——`_extract_addressee_info` 有两个叠加缺陷：①真实 astrbot `Reply` 组件带 deprecated `qq` 字段（值 0），旧代码 `hasattr(seg,"qq")` 把 Reply 误判成 At 跳过；②即便取到 Reply 消息 id，也要去 `group.messages` 反查发送者，但 bot 自己的回复从不入库（入库只发生在 `on_group_message`），反查必然落空。两点叠加导致「回复 bot」这一最强信号在生产环境永久失效（单测因 `SimpleNamespace` 模拟 + 手动塞 bot 记录而误绿）。
+  - 现改为先用 `isinstance(seg, ReplyComponent)` 识别真实 Reply，并**优先读 `Reply.sender_id`**（组件自带被引用者 id，无需查窗口），窗口反查仅作回退兼容。
+  - `_addressee_label` 新增「回复 bot 上一条消息」标签 + 调用处计算 `is_reply_to_bot`。
+- 测试：137 → 143 个用例（新增 `test_extract_addressee_real_reply_uses_sender_id` / `test_extract_addressee_real_reply_to_other_user` / `test_format_recent_dialog_*` ×3 / `test_judge_block_includes_recent_dialog_and_second_person_rule`）。143 passed / 0 failed。
+- ruff 0 issue。metadata.yaml v0.8.4 → v0.8.5。
+
 ## v0.8.4 - 2026-06-14
 
 - **修复：`_cfg_float` 拒绝 NaN/inf**——`main.py:_cfg_float` 之前用 `float()` 把配置值转数值，**NaN 和 inf 都是合法 float**（`float("nan")` / `float("inf")` 都不抛），`max(min_value, NaN)` 还会把 NaN 传染到下游，esm v0.3.0 的 `try_apply_signal` 对非有限 intensity 也会抛 `ValueError`。现在加 `math.isfinite` 守卫，NaN/inf 一律回退到 `default`。

@@ -320,6 +320,74 @@ class PluginHelperTests(unittest.TestCase):
         self.assertEqual(relevance, "strong")
         self.assertIn("回复 bot", reason)
 
+    def test_extract_addressee_real_reply_uses_sender_id(self) -> None:
+        """真实 Reply 组件带 deprecated qq=0，且 bot 回复未入库时，
+        必须靠 Reply.sender_id 判出回复对象，而非被当成 At 跳过。"""
+        from main import ReplyComponent  # 真实 astrbot Reply
+
+        reply = ReplyComponent(id="any", sender_id="99999")  # 回复 bot 的消息
+        event = _Event(message="继续说", chain=[reply], self_id="99999")
+        reply_to, mentioned, is_at_bot, is_at_all = self.plugin._extract_addressee_info(
+            event, group_messages=deque()  # 窗口里没有任何 bot 记录
+        )
+        self.assertEqual(reply_to, "99999")
+        self.assertFalse(is_at_bot)
+        self.assertFalse(is_at_all)
+        self.assertEqual(mentioned, ())
+
+    def test_extract_addressee_real_reply_to_other_user(self) -> None:
+        """回复的是群友（非 bot）时，sender_id 应原样返回，不误判成 bot。"""
+        from main import ReplyComponent
+
+        reply = ReplyComponent(id="any", sender_id="10002")
+        event = _Event(message="你说得对", chain=[reply], self_id="99999")
+        reply_to, _mentioned, is_at_bot, _is_at_all = self.plugin._extract_addressee_info(
+            event, group_messages=deque()
+        )
+        self.assertEqual(reply_to, "10002")
+        self.assertFalse(is_at_bot)
+
+    def test_format_recent_dialog_marks_bot_and_orders(self) -> None:
+        """最近对话原文：按时间正序、bot 自己的发言标注为 bot。"""
+        msgs = [
+            MessageRecord(sender_id="10001", sender_name="alice", content="在吗", timestamp=1.0),
+            MessageRecord(sender_id="99999", sender_name="bot", content="在的", timestamp=2.0, is_bot=True),
+            MessageRecord(sender_id="10002", sender_name="bob", content="你怎么不说话", timestamp=3.0),
+        ]
+        text = self.plugin._format_recent_dialog(msgs, limit=8)
+        lines = text.split("\n")
+        self.assertEqual(lines[0], "alice：在吗")
+        self.assertEqual(lines[1], "bot：在的")
+        self.assertEqual(lines[2], "bob：你怎么不说话")
+
+    def test_format_recent_dialog_respects_limit(self) -> None:
+        msgs = [
+            MessageRecord(sender_id="1", sender_name="a", content=f"m{i}", timestamp=float(i))
+            for i in range(10)
+        ]
+        text = self.plugin._format_recent_dialog(msgs, limit=3)
+        self.assertEqual(len(text.split("\n")), 3)
+        self.assertIn("m9", text)
+        self.assertNotIn("m6", text)
+
+    def test_format_recent_dialog_empty(self) -> None:
+        self.assertEqual(self.plugin._format_recent_dialog([], limit=8), "暂无")
+
+    def test_judge_block_includes_recent_dialog_and_second_person_rule(self) -> None:
+        """judge block 必须带最近对话原文 + 第二人称软规则（方案 A+B）。"""
+        group = GroupContext(
+            messages=deque([
+                MessageRecord(sender_id="10001", sender_name="alice", content="bob 你今天来吗", timestamp=9999999999.0),
+            ])
+        )
+        self.plugin.groups["group-1"] = group
+        self.plugin.users["10001"] = UserContext(user_id="10001")
+        event = _Event(message="bob 你今天来吗")
+        block = self.plugin.build_judge_prompt_block("group-1", event, max_age=9999999999)  # type: ignore[arg-type]
+        self.assertIn("最近对话原文", block)
+        self.assertIn("alice：bob 你今天来吗", block)
+        self.assertIn("第二人称", block)
+
     def test_conversation_opening_high_when_at_bot(self) -> None:
         """v0.5.3+：@ bot 不含问号也该是 high（明确点名）"""
         event = _Event(message="出来", chain=[_at("99999")])

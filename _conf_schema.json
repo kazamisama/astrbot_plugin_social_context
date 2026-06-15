@@ -126,6 +126,12 @@
         "type": "int",
         "default": 180
     },
+    "judge_context_recent_lines": {
+        "description": "⑤ 判断上下文信号 / 喂给判断模型的最近对话原文条数",
+        "hint": "v0.8.5+：把最近 N 条对话原文一起给判断模型，帮它判断「你/他」等第二人称到底指向谁，避免把群友之间的对话误判成在跟 bot 说话。设为 0 关闭。",
+        "type": "int",
+        "default": 8
+    },
     "history_tier1_max_age": {
         "description": "⑥ 历史分层 / 第 1 层时间边界（秒）",
         "hint": "v0.6.0+ 三层时间结构：tier1 (0 ~ 此值) 完整消息列表；tier2 (此值 ~ tier2_max) 压缩摘要；tier3 (tier2_max ~ tier3_max) 更早期摘要。建议 <= judge_context_max_age。",

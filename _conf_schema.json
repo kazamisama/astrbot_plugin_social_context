@@ -104,15 +104,15 @@
     },
     "judge_persona_aware_enabled": {
         "description": "④ 自主判断与主动回复 / 启用判断模型人格感知（v0.5.2+）",
-        "hint": "开启后，判断模型调用会带上当前会话人格的 system_prompt，让 judge 知道“以我是谁”判断是否该插话。模仿 astrbot_plugin_private_proactive_reply 的 _get_system_prompt 实现。",
+        "hint": "开启后，判断模型会额外接收当前会话人格的 system_prompt（来自 AstrBot 当前人格/默认人格），用于以同一人格视角判断“该不该主动插话”。这里不是预填固定人格内容，而是运行时读取会话人格；关闭后 judge 只看 Social Context 和当前消息。",
         "type": "bool",
         "default": true
     },
     "judge_persona_prompt_max_chars": {
         "description": "④ 自主判断与主动回复 / 判断模型人格提示词最大字符数（v0.5.2+）",
-        "hint": "截断保护：超长 system_prompt 会被裁剪并补 …，避免撑爆 judge 小模型的 context 窗口。一般人格设定几百字内，默认 1500 留足余量。",
+        "hint": "截断保护：超长人格 system_prompt 会被裁剪并补 …，避免撑爆 judge 小模型的 context 窗口。默认 10000，适合较完整的人格设定；如 judge 模型上下文较小可调低。",
         "type": "int",
-        "default": 1500
+        "default": 10000
     },
     "judge_persona_cache_ttl_seconds": {
         "description": "④ 自主判断与主动回复 / 人格拉取缓存 TTL（v0.5.2+）",

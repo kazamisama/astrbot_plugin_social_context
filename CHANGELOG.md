@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.7 - 2026-06-15
+
+- **调整：判断模型人格感知说明更明确**——`judge_persona_aware_enabled` 的配置说明改为强调“运行时读取 AstrBot 当前会话人格/默认人格的 system_prompt，并传给 judge”，避免误解为插件预填固定人格内容。
+- **调整：人格 system_prompt 默认截断上限 1500 → 10000**——`judge_persona_prompt_max_chars` 默认值提高到 10000，适配更完整的人格设定；上下文较小的 judge 模型仍可在配置里手动调低。
+- 本机实际配置 `data/config/astrbot_plugin_social_context_config.json` 已同步为 `judge_persona_prompt_max_chars=10000`（不纳入仓库提交）。
+- 测试：145 → 146 个用例（新增默认 10000 不截断 5000 字人格 prompt 回归）。146 passed / 0 failed。
+- ruff 0 issue。metadata.yaml v0.8.6 → v0.8.7。
+
 ## v0.8.6 - 2026-06-15
 
 - **修复：高级模板旧配置覆盖 v0.8.5 新判断逻辑**——v0.8.5 已在代码默认 prompt 中加入「最近对话原文」和第二人称判定规则，但旧配置文件里如果保存了 `judge_decision_prompt` / `judge_prompt_template` 的旧内置默认值，运行时会优先使用配置里的非空模板，导致新规则被旧模板覆盖。

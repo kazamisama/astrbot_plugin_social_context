@@ -168,8 +168,8 @@ judge_min_reply_interval      同会话主动回复最小间隔，默认 60 秒
 autonomous_reply_budget_per_hour  每小时主动回复预算，默认 3
 autonomous_reply_budget_per_day   每日主动回复预算，默认 20
 judge_max_retries             判断 JSON 解析失败重试次数，默认 1
-judge_persona_aware_enabled   判断模型人格感知（v0.5.2+），默认 true；让 judge 以当前人格视角判断是否该插话
-judge_persona_prompt_max_chars  判断模型人格提示词最大字符数，默认 1500；超长 system_prompt 截断保护
+judge_persona_aware_enabled   判断模型人格感知（v0.5.2+），默认 true；运行时读取当前会话人格 system_prompt，让 judge 以同一人格视角判断是否该插话
+judge_persona_prompt_max_chars  判断模型人格提示词最大字符数，默认 10000；超长 system_prompt 截断保护
 judge_persona_cache_ttl_seconds  人格拉取缓存 TTL（秒），默认 300；避免每条群消息都查 persona_manager
 
 # ⑤ 判断上下文信号

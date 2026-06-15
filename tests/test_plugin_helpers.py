@@ -1404,6 +1404,21 @@ class JudgePersonaTests(unittest.TestCase):
         self.assertLessEqual(len(sp), 101)  # 100 + "…"
         self.assertTrue(sp.endswith("…"))
 
+    def test_resolve_judge_persona_default_limit_keeps_large_prompt(self) -> None:
+        long_prompt = "X" * 5000
+        persona = _FakePersona(system_prompt=long_prompt)
+        self.plugin.context = _FakeContext(
+            conv_mgr=_FakeConversationManager(
+                conversation=_FakeConversation(persona_id="p")
+            ),
+            persona_mgr=_FakePersonaManager(personas={"p": persona}),
+        )
+        pid, sp = asyncio.run(
+            self.plugin._resolve_judge_persona(self._make_event())
+        )
+        self.assertEqual(pid, "p")
+        self.assertEqual(sp, long_prompt)
+
     def test_resolve_judge_persona_cache_hits(self) -> None:
         call_count = {"get_persona": 0}
 

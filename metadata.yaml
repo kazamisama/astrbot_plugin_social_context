@@ -2,7 +2,7 @@ name: astrbot_plugin_social_context
 display_name: Social Context 群聊状态感知层
 desc: 轻量群聊状态感知插件，维护短期群氛围、互动事件和用户熟悉度，并按需注入 LLM 上下文；提供 get_group_members_info LLM 工具按需查询群成员名册。
 help: 使用 /social_context 查看当前会话状态；管理员可用 /social_context_reset 重置当前会话状态。
-version: v0.8.6
+version: v0.8.7
 author: chiriu & 橘雪莉
 repo: https://github.com/kazamisama/astrbot_plugin_social_context
 support_platforms:

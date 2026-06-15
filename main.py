@@ -182,7 +182,7 @@ class SocialContextPlugin(
 
         # 截断保护，避免超长 system_prompt 撑爆 judge context
         if system_prompt:
-            max_chars = self._cfg_int("judge_persona_prompt_max_chars", 1500, 100)
+            max_chars = self._cfg_int("judge_persona_prompt_max_chars", 10000, 100)
             if len(system_prompt) > max_chars:
                 system_prompt = system_prompt[:max_chars].rstrip() + "…"
 

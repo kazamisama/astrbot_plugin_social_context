@@ -388,6 +388,39 @@ class PluginHelperTests(unittest.TestCase):
         self.assertIn("alice：bob 你今天来吗", block)
         self.assertIn("第二人称", block)
 
+    def test_judge_block_upgrades_legacy_default_template(self) -> None:
+        """旧配置文件里保存的内置默认 judge 模板，应自动升级到当前默认模板。"""
+        self.plugin.config = _Cfg({
+            "judge_prompt_template": self.plugin._legacy_judge_prompt_template_minimal(),
+        })
+        group = GroupContext(
+            messages=deque([
+                MessageRecord(sender_id="10001", sender_name="alice", content="bob 你今天来吗", timestamp=9999999999.0),
+            ])
+        )
+        self.plugin.groups["group-1"] = group
+        self.plugin.users["10001"] = UserContext(user_id="10001")
+        event = _Event(message="bob 你今天来吗")
+        block = self.plugin.build_judge_prompt_block("group-1", event, max_age=9999999999)  # type: ignore[arg-type]
+        self.assertIn("最近对话原文", block)
+        self.assertIn("第二人称", block)
+
+    def test_decision_prompt_upgrades_legacy_default_template(self) -> None:
+        """旧配置文件里保存的内置默认决策模板，应自动升级到当前默认模板。"""
+        self.plugin.config = _Cfg({
+            "judge_decision_prompt": self.plugin._legacy_judge_decision_prompt_minimal(),
+        })
+        template = self.plugin._config_template_or_default(
+            "judge_decision_prompt",
+            self.plugin._default_judge_decision_prompt(),
+            legacy_defaults=(
+                self.plugin._legacy_judge_decision_prompt(),
+                self.plugin._legacy_judge_decision_prompt_minimal(),
+            ),
+        )
+        self.assertIn("主语判定", template)
+        self.assertIn("第二人称", template)
+
     def test_conversation_opening_high_when_at_bot(self) -> None:
         """v0.5.3+：@ bot 不含问号也该是 high（明确点名）"""
         event = _Event(message="出来", chain=[_at("99999")])

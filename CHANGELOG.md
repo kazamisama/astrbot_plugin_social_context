@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.8.13 - 2026-06-27
+
+- **重构：`_conf_schema.json` 按功能方向分框（engram 风格）**——v0.8.13 起 schema 从扁平（所有 key 顶层平铺，description 用 `① 基础` `② 群聊状态观察` `③ 正式回复注入` ... 序号分组）改为嵌套（11 个顶层 `type: object` 框，每个 `items` 包含具体字段）。参考 `astrbot_plugin_engram_core` 的 schema 结构。
+  - **分框**（13 序号段 → 11 功能框）：
+    - `basic`（总开关、群聊限制）| `state_observation`（窗口、阈值、熟悉度）| `reply_injection`（主回复注入）
+    - `judge`（自主判断 + 上下文信号合并）| `history`（三层时间 + 周期压缩合并）| `prompt_templates`（3 个可编辑模板）
+    - `safety`（注入扫描 + 临时私聊拦截）| `persistence`（JSON 保存）| `output_step`（智能引用）
+    - `tools`（get_group_members_info 工具）| `emotion_bridge`（ESM 接入点）
+  - **取消序号**——description 里的 `① ② ③...` 圆圈序号全部移除，依赖 section 名做分组。
+  - **数据层完全不动**——schema 嵌套但**数据保持扁平**（与 engram 一致：data layer 是 `{enabled: true, window_seconds: 60, ...}`，不是 `{basic: {enabled: true}, state_observation: {window_seconds: 60}, ...}`）。AstrBot WebUI 负责 schema→data 的扁平映射。**现有用户配置 JSON 0 改动兼容**。
+  - **零代码改动**——`main.py` / `mixins/*.py` 里所有 `self.config.get("xxx")` 调用仍是平铺 key，**不用改一行**。`_cfg_bool` / `_cfg_int` / `_cfg_float` / `_cfg_str` 4 个 helper 也保持原样。
+  - **统一 hint 文案**——每个 section 加一句简短说明（"插件总开关与适用范围" / "维护短期群氛围..." 等），让用户在 WebUI 折叠框展开时一眼看到该组用途。
+- 测试：149 passed / 0 failed（数据层和代码层零改动，schema-only refactor，测试无需更新）。
+- ruff 0 issue（未变更）。metadata.yaml v0.8.12 → v0.8.13。
+
 ## v0.8.12 - 2026-06-27
 
 - **重构：emotion_bridge 砍掉 self-reply signal 接入点（3→2）**——v0.8.12 起 social_context 不再管"bot 主动回复后给 ESM 打 signal"的事，迁回 ESM 端。理由：① ESM 自己 v0.10.0+ 新增 `apply_self_reply_signal(event)` 方法，内部用 `TalkWillingnessState` 决策（reversal zone / consecutive-apply cap 等），比 social_context 的简单节流更精细；② social_context 是"观察者"，不该管 emotion 自我反馈。

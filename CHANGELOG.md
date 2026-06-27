@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.11 - 2026-06-27
+
+- **改进：`_resolve_judge_persona` 拿不到人格时打 warning**——之前所有失败路径都走 `logger.debug` + 静默返 `(None, None)`，管理员很难发现「judge 通道一直在无身份运行」。现在所有路径都失败时打 `logger.warning`，提示可能的原因：① 未配默认人格 ② 会话人格 prompt 为空 ③ conversation_manager / persona_manager 未注册。同时把 `umo` 写进 warning 便于定位群/私聊。
+  - **不节流**——TTL 缓存（默认 300s）已经在客观上限频：同一个 umo 一次失败只在 TTL 过期后才会再触发 warn。v0.8.6 那轮 refactor 加的缓存结构顺便成了 warn 的天然节流器。
+  - **保留 `judge_persona_aware_enabled=False` 的静默语义**——用户主动关的功能不应该 warn。
+  - **保留缓存命中的静默语义**——第一次失败已经 warn 过，TTL 内缓存命中不应重复 warn。
+  - **保留每个 API 路径的 debug 日志**——单点失败（如 `get_persona` 瞬时异常）仍走 debug，便于排查；只有「所有路径都失败」才升到 warning。
+- 测试：153 → 158 个用例（`JudgePersonaTests` 新增 5 个：`test_resolve_judge_persona_warns_when_no_persona_manager` / `..._when_default_has_no_prompt` 验证 warn 触发；`..._silent_when_feature_disabled` / `..._silent_on_cache_hit` / `..._silent_when_persona_found` 验证不该 warn 的场景用 `assertNoLogs` 反向断言）。158 passed / 0 failed。
+- ruff 0 issue（未变更）。metadata.yaml v0.8.10 → v0.8.11。
+
 ## v0.8.10 - 2026-06-27
 
 - **重构：历史压缩通道拆分为「静态指令 + 结构化数据」**——`mixins/compress.py` 之前 `_build_compress_prompt` 把整段压缩 prompt 拼成一个字符串（角色 + 规则 + 硬约束 + 旧摘要 + 新增消息），然后 `_call_compress_llm(prompt, timeout)` 直接走 `provider.text_chat(prompt=prompt, ...)`。v0.8.10 拆成「prompt=静态指令 + extra_user_content_parts=动态数据」两部分，与 v0.8.8 主回复 / v0.8.9 judge 通道改造保持模式一致：

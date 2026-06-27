@@ -1708,6 +1708,108 @@ class JudgePersonaTests(unittest.TestCase):
         asyncio.run(self.plugin._resolve_judge_persona(ev))
         self.assertEqual(call_count["get_persona"], 1)
 
+    # ===== v0.8.11+：拿不到人格时的 warning 日志 =====
+
+    def test_resolve_judge_persona_warns_when_no_persona_manager(self) -> None:
+        """v0.8.11+：context 缺 conversation_manager / persona_manager 时打 warning。"""
+        import logging
+
+        # context 只有空 stub，没有 manager
+        class _EmptyCtx:
+            pass
+
+        self.plugin.context = _EmptyCtx()
+        ev = self._make_event()
+        with self.assertLogs("astrbot", level="WARNING") as cm:
+            pid, sp = asyncio.run(self.plugin._resolve_judge_persona(ev))
+        self.assertIsNone(pid)
+        self.assertIsNone(sp)
+        self.assertTrue(
+            any("judge 通道拿不到人格视角" in msg for msg in cm.output),
+            f"expected warning, got: {cm.output}",
+        )
+        self.assertTrue(
+            any("umo-1" in msg for msg in cm.output),
+            f"warning should include umo for traceability, got: {cm.output}",
+        )
+
+    def test_resolve_judge_persona_warns_when_default_has_no_prompt(self) -> None:
+        """v0.8.11+：get_default_persona_v3 返的 dict 里没 'prompt' 时打 warning。"""
+        import logging
+
+        class _EmptyDefaultMgr:
+            async def get_default_persona_v3(self, umo: str = ""):
+                return {}  # 没有 'prompt' 键
+
+        self.plugin.context = _FakeContext(
+            conv_mgr=_FakeConversationManager(
+                conversation=_FakeConversation(persona_id=None)
+            ),
+            persona_mgr=_EmptyDefaultMgr(),
+        )
+        ev = self._make_event()
+        with self.assertLogs("astrbot", level="WARNING") as cm:
+            pid, sp = asyncio.run(self.plugin._resolve_judge_persona(ev))
+        self.assertIsNone(pid)
+        self.assertIsNone(sp)
+        self.assertTrue(
+            any("judge 通道拿不到人格视角" in msg for msg in cm.output)
+        )
+
+    def test_resolve_judge_persona_silent_when_feature_disabled(self) -> None:
+        """v0.8.11+：judge_persona_aware_enabled=False 时不 warn（用户主动关，不是错）。"""
+        import logging
+
+        # 设个会失败的 manager；功能关闭后应该走早返不 warn
+        self.plugin.config = _Cfg({"judge_persona_aware_enabled": False})
+        self.plugin.context = _FakeContext(
+            conv_mgr=_FakeConversationManager(
+                conversation=_FakeConversation(persona_id="x")
+            ),
+            persona_mgr=_FakePersonaManager(personas={}),  # 空，无 persona
+        )
+        ev = self._make_event()
+        # 用 assertNoLogs 反向验证：不应有 WARNING
+        with self.assertNoLogs("astrbot", level="WARNING"):
+            pid, sp = asyncio.run(self.plugin._resolve_judge_persona(ev))
+        self.assertIsNone(pid)
+        self.assertIsNone(sp)
+
+    def test_resolve_judge_persona_silent_on_cache_hit(self) -> None:
+        """v0.8.11+：缓存命中时不再 warn（第一次的 warn 已经写过了）。"""
+        import logging
+        import time as _t
+
+        # 预填一个失败的缓存
+        self.plugin._persona_cache["umo-1"] = (None, None, _t.time())
+        # 不设任何 manager；缓存命中应直接返 (None, None) 不 warn
+        class _EmptyCtx:
+            pass
+
+        self.plugin.context = _EmptyCtx()
+        ev = self._make_event()
+        with self.assertNoLogs("astrbot", level="WARNING"):
+            pid, sp = asyncio.run(self.plugin._resolve_judge_persona(ev))
+        self.assertIsNone(pid)
+        self.assertIsNone(sp)
+
+    def test_resolve_judge_persona_silent_when_persona_found(self) -> None:
+        """v0.8.11+：正常路径下不应该 warn。"""
+        import logging
+
+        persona = _FakePersona(system_prompt="我是橘雪莉。")
+        self.plugin.context = _FakeContext(
+            conv_mgr=_FakeConversationManager(
+                conversation=_FakeConversation(persona_id="shirley")
+            ),
+            persona_mgr=_FakePersonaManager(personas={"shirley": persona}),
+        )
+        ev = self._make_event()
+        with self.assertNoLogs("astrbot", level="WARNING"):
+            pid, sp = asyncio.run(self.plugin._resolve_judge_persona(ev))
+        self.assertEqual("shirley", pid)
+        self.assertEqual("我是橘雪莉。", sp)
+
 
 class ReplyStepTests(unittest.TestCase):
     """output_step.reply 智能引用纯函数测试。"""

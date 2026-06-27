@@ -122,6 +122,13 @@ class SocialContextPlugin(
           2. 降级用 persona_manager.get_default_persona_v3(umo)
           3. 全部失败/异常返 (None, None)，不抛
         增加轻量缓存避免每次群消息都查库。
+
+        v0.8.11+：所有路径都拿不到人格时（既不是 ``judge_persona_aware_enabled``
+        主动关，也不是缓存命中），打 ``logger.warning`` 提示管理员——
+        ``judge`` 通道会以「无身份」运行，决策可能偏离角色预期。这不是代码
+        bug，是配置/数据问题（没人配 persona / 配了但 prompt 为空 /
+        persona_manager 缺失等）。不节流：缓存 TTL 已经在客观上限频
+        （同一个 umo 默认 300s 内只 warn 一次）。
         """
         if not self._cfg_bool("judge_persona_aware_enabled", True):
             return None, None
@@ -132,6 +139,10 @@ class SocialContextPlugin(
         except Exception:
             umo = ""
         if not umo:
+            logger.warning(
+                "[social_context] _resolve_judge_persona 拿不到 umo（事件缺 "
+                "unified_msg_origin），judge 通道将以无身份运行。"
+            )
             return None, None
 
         ttl = self._cfg_int("judge_persona_cache_ttl_seconds", 300, 0)
@@ -186,6 +197,16 @@ class SocialContextPlugin(
             max_chars = self._cfg_int("judge_persona_prompt_max_chars", 10000, 100)
             if len(system_prompt) > max_chars:
                 system_prompt = system_prompt[:max_chars].rstrip() + "…"
+
+        # v0.8.11+：所有路径都失败时 warn 一次，便于管理员发现配置/数据问题。
+        # 不节流——TTL 缓存（同 umo 默认 300s 一次）已在客观上限频。
+        if persona_id is None and system_prompt is None:
+            logger.warning(
+                f"[social_context] judge 通道拿不到人格视角（umo={umo}），"
+                "将以无身份 judge 运行。常见原因：① 未配默认人格 ② 会话人格 "
+                "prompt 为空 ③ conversation_manager / persona_manager 未注册。"
+                "如需关闭此警告，将 judge_persona_aware_enabled 设为 false。"
+            )
 
         self._persona_cache[umo] = (persona_id, system_prompt, now)
         return persona_id, system_prompt

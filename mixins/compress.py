@@ -13,23 +13,28 @@ import asyncio
 import time
 
 from astrbot.api import logger
+from astrbot.core.agent.message import TextPart
 
 
 class CompressMixin:
     """历史压缩与过期清理的后台逻辑集合。"""
 
-    HISTORY_COMPRESS_PROMPT = (
-        "你是群聊历史上下文压缩助手。基于「旧摘要」和「新增消息」，"
-        "输出一份更新后的简洁摘要，专门服务于「判断 bot 是否该插话」这一用途。\n"
+    # v0.8.10+：把 v0.6 起的 HISTORY_COMPRESS_PROMPT 拆成两部分——
+    # 静态指令（角色 + 规则 + 硬约束）走 ``prompt=``，动态数据（旧摘要 +
+    # 每条新消息）走 ``extra_user_content_parts`` 列表式分块。三个插件
+    # （social_context / emotion_state_machine / livingmemory）现在都用
+    # 同一套 prompt=静态指令 + extra_user_content_parts 动态数据的写法。
+    HISTORY_COMPRESS_INSTRUCTION = (
+        "你是群聊历史上下文压缩助手。\n"
+        "基于下方「旧摘要」和「新增消息」，输出一份更新后的简洁摘要，"
+        "专门服务于「判断 bot 是否该插话」这一用途。\n\n"
         "必须保留的信息：\n"
         "- 群友在聊什么话题、谁和谁对话、bot 之前是否参与/承诺过什么\n"
         "- 是否有未完成的事 / 待回复的提问 / 失约的承诺\n"
-        "- 群友关系变化（谁在跟谁互动、是否在 @ 谁）\n"
-        "必须丢掉的信息：闲聊表情包、重复的客套、跟插话判断无关的细节。\n"
+        "- 群友关系变化（谁在跟谁互动、是否在 @ 谁）\n\n"
+        "必须丢掉的信息：闲聊表情包、重复的客套、跟插话判断无关的细节。\n\n"
         "硬约束：输出不超过 {max_chars} 字，简洁到扫一眼就能看全。\n"
-        "只输出更新后的摘要文本，不要 JSON，不要任何前缀说明。\n"
-        "\n旧摘要：\n{old}\n"
-        "\n新增消息（按时间顺序，已脱敏处理）：\n{new_messages}\n"
+        "只输出更新后的摘要文本，不要 JSON，不要任何前缀说明。"
     )
 
     def _should_warn(self, key: str, throttle: float = 60.0) -> bool:
@@ -64,39 +69,73 @@ class CompressMixin:
             return
         logger.warning(f"[social_context] 压缩 task 未捕获异常: {exc!r}")
 
-    def _build_compress_prompt(self, old: str, new_messages: list, max_chars: int) -> str:
-        """构造压缩 prompt。
+    def _build_compress_parts(
+        self,
+        old: str,
+        msgs: list,
+        max_total_chars: int | None = None,
+    ) -> list:
+        """v0.8.10+：把压缩输入拆成结构化 user 内容块列表。
 
-        new_messages 已脱敏（content 可能为空，因为 v0.4.3 起不持久化正文）。
-        压缩场景下，我们重新从当前 group 读出来时可以拿到 content。
+        返回的 TextPart 顺序固定：
+        1. ``## 旧摘要`` 块（含 fallback 文本）
+        2. ``## 新增消息（按时间顺序，已脱敏处理）`` 标题块
+        3. 每条新消息一个块：``- [ts] sender: content``
+
+        每个 TextPart 都标 ``.mark_as_temp()``（``_no_save=True``）——
+        compress 是单次消费操作，输入不应被任何持久化层当历史引用，
+        与 v0.8.8 主回复 / v0.8.9 judge 通道保持模式一致。
+
+        ``max_total_chars`` 控制"新增消息"区段的总字符上限（与 v0.8.2
+        的 tier3 truncation 语义对齐）。截断判断放在 append 之前，
+        保证累计长度严格 ≤ 上限。
         """
-        if not new_messages:
-            return ""
-        lines: list[str] = []
-        for m in new_messages:
-            # 优先用 content（如果有），否则只显示时间 + sender
-            content = (getattr(m, "content", "") or "").strip()
-            sender_name = getattr(m, "sender_name", "") or getattr(m, "sender_id", "未知")
-            if content:
-                lines.append(f"- [{int(m.timestamp)}] {sender_name}: {content}")
-            else:
-                lines.append(f"- [{int(m.timestamp)}] {sender_name}: (无内容)")
-        new_block = "\n".join(lines)
-        # 旧摘要为空时提示是"首次压缩"
+        parts: list = []
         old_block = old.strip() if old and old.strip() else "（暂无旧摘要，这是首次压缩）"
-        return self.HISTORY_COMPRESS_PROMPT.format(
-            max_chars=max_chars,
-            old=old_block,
-            new_messages=new_block,
+        parts.append(
+            TextPart(text=f"## 旧摘要\n{old_block}", type="text").mark_as_temp()
         )
+        if not msgs:
+            parts.append(
+                TextPart(
+                    text="## 新增消息\n（无新增消息，仅基于旧摘要刷新）",
+                    type="text",
+                ).mark_as_temp()
+            )
+            return parts
+        parts.append(
+            TextPart(
+                text="## 新增消息（按时间顺序，已脱敏处理）",
+                type="text",
+            ).mark_as_temp()
+        )
+        total = 0
+        for m in msgs:
+            content = (getattr(m, "content", "") or "").strip()
+            sender = getattr(m, "sender_name", "") or getattr(m, "sender_id", "未知")
+            line = f"- [{int(m.timestamp)}] {sender}: {content or '(无内容)'}"
+            # 截断判断放在 append 之前（与 v0.8.2 _format_tier3_messages 语义一致）
+            if max_total_chars is not None and total + len(line) > max_total_chars:
+                break
+            parts.append(TextPart(text=line, type="text").mark_as_temp())
+            total += len(line)
+        return parts
 
-    async def _call_compress_llm(self, prompt: str, timeout: float) -> str | None:
-        """调 judge_provider_id 对应的 provider 跑一次压缩。
+    async def _call_compress_llm(
+        self,
+        instruction: str,
+        parts: list,
+        timeout: float,
+    ) -> str | None:
+        """v0.8.10+：压缩 LLM 调用。
 
-        失败 / 超时 / 返回空 都返 None，调用方按"保留旧摘要"处理。
-        v0.6.2+：warning 走 _should_warn 去重，避免 LLM 挂掉时日志被刷爆。
+        ``instruction`` 走 ``prompt=``（静态规则、硬约束、输出格式）；
+        ``parts`` 走 ``extra_user_content_parts=``（动态数据：旧摘要 + 每条
+        新消息独立成块）。失败 / 超时 / 返回空 都返 None，调用方按
+        "保留旧摘要"处理。warning 走 ``_should_warn`` 去重，避免
+        LLM 挂掉时日志被刷爆。
         """
-        if not prompt:
+        if not instruction or not parts:
             return None
         provider_id = str(self.config.get("judge_provider_id", "") or "").strip()
         if not provider_id:
@@ -114,10 +153,11 @@ class CompressMixin:
         try:
             response = await asyncio.wait_for(
                 provider.text_chat(
-                    prompt=prompt,
+                    prompt=instruction,
                     contexts=[],
                     image_urls=[],
                     system_prompt="",
+                    extra_user_content_parts=parts,
                 ),
                 timeout=timeout,
             )
@@ -172,10 +212,12 @@ class CompressMixin:
                     self.sender_name = name
                     self.content = content
             lite = [_LiteRec(d["ts"], d["name"], d["content"]) for d in safe_msgs]
-            prompt = self._build_compress_prompt(
-                group.history_summary, lite, max_chars
+            # v0.8.10+：instruction 走 prompt=，每条新消息独立成 TextPart
+            instruction = self.HISTORY_COMPRESS_INSTRUCTION.format(max_chars=max_chars)
+            parts = self._build_compress_parts(
+                group.history_summary, lite, max_total_chars=None
             )
-            new_summary = await self._call_compress_llm(prompt, timeout)
+            new_summary = await self._call_compress_llm(instruction, parts, timeout)
             if new_summary:
                 # 截断保护
                 if len(new_summary) > max_chars * 2:
@@ -244,16 +286,14 @@ class CompressMixin:
             old_block = group.history_daily_summary or "（暂无 tier3 旧摘要）"
             if group.history_summary:
                 old_block += f"\n\n近期补充（tier2 摘要）：\n{group.history_summary}"
-            prompt = self.HISTORY_COMPRESS_PROMPT.format(
-                max_chars=max_chars,
-                old=old_block,
-                # v0.8.2+：用 max_chars 作为输入总字符上限，与输出限制对齐，
-                # 避免长窗口 + 高频群单次 prompt 爆 token。
-                new_messages=self._format_tier3_messages(
-                    safe_msgs, max_total_chars=max_chars
-                ),
+            # v0.8.10+：instruction 走 prompt=，每条新消息独立成 TextPart；
+            # 用 max_chars 作为输入总字符上限（与 v0.8.2 truncation 语义一致），
+            # 避免长窗口 + 高频群单次 prompt 爆 token。
+            instruction = self.HISTORY_COMPRESS_INSTRUCTION.format(max_chars=max_chars)
+            parts = self._build_compress_parts(
+                old_block, safe_msgs, max_total_chars=max_chars
             )
-            new_summary = await self._call_compress_llm(prompt, timeout)
+            new_summary = await self._call_compress_llm(instruction, parts, timeout)
             if new_summary:
                 if len(new_summary) > max_chars * 2:
                     new_summary = new_summary[: max_chars * 2]

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.8.10 - 2026-06-27
+
+- **重构：历史压缩通道拆分为「静态指令 + 结构化数据」**——`mixins/compress.py` 之前 `_build_compress_prompt` 把整段压缩 prompt 拼成一个字符串（角色 + 规则 + 硬约束 + 旧摘要 + 新增消息），然后 `_call_compress_llm(prompt, timeout)` 直接走 `provider.text_chat(prompt=prompt, ...)`。v0.8.10 拆成「prompt=静态指令 + extra_user_content_parts=动态数据」两部分，与 v0.8.8 主回复 / v0.8.9 judge 通道改造保持模式一致：
+  - **HISTORY_COMPRESS_INSTRUCTION**（取代 HISTORY_COMPRESS_PROMPT）——只含静态规则：角色、必须保留 / 丢掉的字段、硬约束（输出 ≤ N 字）、输出格式（不要 JSON）。唯一占位符是 `{max_chars}`。
+  - **_build_compress_parts(old, msgs, max_total_chars)**（取代 _build_compress_prompt）——返回 `list[TextPart]`：
+    1. 旧摘要块（fallback 文案是「（暂无旧摘要，这是首次压缩）」）
+    2. 新增消息标题块
+    3. 每条新消息一个独立 TextPart（`- [ts] sender: content`）
+    4. 全部 `.mark_as_temp()`（compress 是单次消费，不入对话历史）
+    5. `max_total_chars` 控制新增消息区段累计字符上限，截断前严格 ≤ 上限（与 v0.8.2 `_format_tier3_messages` 语义一致）
+  - **_call_compress_llm(instruction, parts, timeout)**——新签名：`prompt=instruction`、`extra_user_content_parts=parts`、其他参数不变。新增空参早返（`instruction=""` 或 `parts=[]` 直接 None，不浪费 provider 调用）。
+  - **_compress_history_tier2 / _compress_history_tier3** 调用处同步迁移：tier2 走 `max_total_chars=None`（无总量限制），tier3 走 `max_total_chars=max_chars`（保留 v0.8.2 truncation 语义）。
+- **好处**：① 三个插件（social_context / emotion_state_machine / livingmemory）注入模式全栈统一——`prompt=` 静态规则 + `extra_user_content_parts=` 动态数据；② 注入扫描语义更清晰：扫描体现在 `parts` 列表的 TextPart.text 里（v0.8.2 那一轮的 `_scan_variables` 在 `_compress_history_tier3` 里逐条扫，v0.8.10 后效果直接体现在 part.text 上）；③ 未来 compress 频率提高时（如果加 on_message 触发）可以受益于 AstrBot 对 user-extra 的 prefix cache 优化（虽然 tier2/3 调用频率低，收益小）；④ max_total_chars 截断判断从"对拼接后字符串"变成"对每条独立消息"，更精确。
+- **行为兼容**：模型看到的最终内容与 v0.8.9 一致（system_prompt 仍空、指令在 user prompt、动态数据在 user 末尾 TextPart），OpenAI / Anthropic / Gemini 等 provider 都能正确处理结构化 user content。
+- 测试：150 → 153 个用例（`_build_compress_prompt_*` 2 个老测试 → `_build_compress_parts_*` 3 个新测试，新增 truncation 和 empty_msgs 覆盖；`_call_compress_llm_*` 4 个老测试同步迁移到 3 参签名，新增 `test_call_compress_llm_empty_args` 早返覆盖；`test_compress_history_tier3_scans_injection` 同步迁移，验证 `<INJECTION_RISK>` 仍出现在 part.text 里）。153 passed / 0 failed。
+- ruff 0 issue（未变更）。metadata.yaml v0.8.9 → v0.8.10。
+
 ## v0.8.9 - 2026-06-27
 
 - **重构：judge 通道 LLM 调用从 `prompt=` 字符串迁到 `extra_user_content_parts`**——`_judge_should_reply` 之前直接 `provider.text_chat(prompt=prompt, ...)`，把整个决策 prompt（角色 + context_block + 当前消息 + 规则 + JSON 输出要求）当作用户主消息。和 v0.8.8 主回复通道的改造对齐：决策 prompt 现在以 `TextPart(text=prompt, type="text").mark_as_temp()` 形式写到 `extra_user_content_parts`，`prompt=None`。

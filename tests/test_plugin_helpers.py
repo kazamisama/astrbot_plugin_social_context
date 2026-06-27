@@ -1259,6 +1259,9 @@ class PluginHelperTests(unittest.TestCase):
         self.assertIsNone(event.result)
 
     def test_on_llm_request_keeps_trigger_note_when_reply_inject_disabled(self) -> None:
+        """v0.8.7 旧行为回归：request 只有 system_prompt（无
+        extra_user_content_parts）时，触发提示应走兜底写入 system_prompt。"""
+
         class _Request:
             system_prompt = "base"
 
@@ -1278,6 +1281,79 @@ class PluginHelperTests(unittest.TestCase):
         self.assertIn("本次回复由群聊状态判断主动触发", request.system_prompt)
         self.assertIn("建议回复风格：short", request.system_prompt)
         self.assertNotIn("[群聊状态观察 / 正式回复参考]", request.system_prompt)
+
+    def test_on_llm_request_uses_extra_user_content_parts_when_available(self) -> None:
+        """v0.8.8+：request 有 extra_user_content_parts 时，触发提示走新路径。"""
+
+        class _Request:
+            system_prompt = "base"
+            extra_user_content_parts: list = []
+
+        self.plugin.config = _Cfg({"reply_inject_enabled": False})
+        self.plugin.groups["group-1"] = GroupContext()
+        event = _Event(
+            extras={
+                "social_context_triggered": True,
+                "social_context_reply_style": "playful",
+                "social_context_reply_intent": "lighten_mood",
+            }
+        )
+        request = _Request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        # system_prompt 不应被改写
+        self.assertEqual("base", request.system_prompt)
+        # 新路径：触发提示以 TextPart 形式写到 extra_user_content_parts
+        self.assertEqual(1, len(request.extra_user_content_parts))
+        part = request.extra_user_content_parts[0]
+        self.assertIn("本次回复由群聊状态判断主动触发", part.text)
+        self.assertIn("建议回复风格：playful", part.text)
+        self.assertIn("回复意图：lighten_mood", part.text)
+        # .mark_as_temp() 标记（ContentPart._no_save）
+        self.assertTrue(getattr(part, "_no_save", False))
+
+    def test_on_llm_request_appends_observation_block_to_extra_user_content_parts(self) -> None:
+        """v0.8.8+：reply_inject_enabled=True 时观察块也走新路径，
+        且触发提示（如果同时为真）会作为第二个 TextPart 追加。"""
+
+        class _Request:
+            system_prompt = "base"
+            extra_user_content_parts: list = []
+
+        self.plugin.config = _Cfg({"reply_inject_enabled": True})
+        self.plugin.groups["group-1"] = GroupContext()
+        # 塞一条消息让 build_reply_prompt_block 产出非空 block
+        group = self.plugin.groups["group-1"]
+        from types import SimpleNamespace
+        from main import MessageRecord
+        group.messages.append(
+            MessageRecord(
+                sender_id="10001",
+                sender_name="alice",
+                content="hello",
+                timestamp=time.time(),
+                is_bot=False,
+            )
+        )
+        event = _Event(
+            extras={
+                "social_context_triggered": True,
+                "social_context_reply_style": "short",
+                "social_context_reply_intent": "join_topic",
+            }
+        )
+        request = _Request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        # system_prompt 不被污染
+        self.assertEqual("base", request.system_prompt)
+        # 两个 TextPart：观察块 + 触发提示
+        self.assertEqual(2, len(request.extra_user_content_parts))
+        texts = [p.text for p in request.extra_user_content_parts]
+        self.assertTrue(any("[群聊状态观察 / 正式回复参考]" in t for t in texts))
+        self.assertTrue(any("本次回复由群聊状态判断主动触发" in t for t in texts))
 
 
 class _FakePersona:

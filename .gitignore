@@ -4,3 +4,7 @@ __pycache__/
 *.pyd
 .codegraph/
 *.bak
+
+# Local runtime data: command config, t2i template cache, temp files, etc.
+# Should not be committed to the repo.
+data/

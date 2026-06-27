@@ -21,6 +21,7 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
+from astrbot.core.agent.message import TextPart
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -961,10 +962,21 @@ class SocialContextPlugin(
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, request):
-        """在 LLM 请求前按需注入群聊状态摘要或自主触发提示。"""
+        """在 LLM 请求前按需注入群聊状态摘要或自主触发提示。
+
+        v0.8.8+：改用 ``request.extra_user_content_parts.append(TextPart(...))``，
+        把动态块写到用户消息末尾而不是 ``request.system_prompt`` 字符串拼接。
+        好处：①不再污染 LLM 前缀缓存（system 部分稳定可缓存）；②与
+        emotion_state_machine v0.9.x、livingmemory 等同仓插件保持一致；
+        ③ ``.mark_as_temp()`` 让群聊观察块不进入对话历史（窗口外的旧
+        vibe/speaker 列表不会被后续轮次反复引用）。低版本 AstrBot（无
+        ``extra_user_content_parts`` 字段）走 system_prompt 兜底。
+        """
         if not self._cfg_bool("enabled", True):
             return
-        if not hasattr(request, "system_prompt"):
+        if not hasattr(request, "system_prompt") and not hasattr(
+            request, "extra_user_content_parts"
+        ):
             return
 
         group_id = event.get_group_id()
@@ -975,6 +987,21 @@ class SocialContextPlugin(
         group = self._get_group(scope)
         now = time.time()
 
+        def _append(text: str, *, sep: str = "\n\n") -> None:
+            """优先写到 extra_user_content_parts（用户消息末尾），
+            旧版本 AstrBot 走 system_prompt 兜底。``sep`` 仅影响兜底路径
+            的拼接行为，新路径下每个 TextPart 是独立的结构化内容块，
+            不需要分隔符。
+            """
+            if hasattr(request, "extra_user_content_parts"):
+                request.extra_user_content_parts.append(
+                    TextPart(text=text, type="text").mark_as_temp()
+                )
+            elif hasattr(request, "system_prompt"):
+                request.system_prompt = (
+                    (request.system_prompt or "").rstrip() + sep + text
+                )
+
         if self._reply_inject_enabled():
             inject_cd = self._cfg_float("inject_cd", 20.0, 0.0)
             if now - group.last_injected_time >= inject_cd:
@@ -982,7 +1009,7 @@ class SocialContextPlugin(
                 block = self.build_reply_prompt_block(scope, event)
                 if block:
                     group.last_injected_time = now
-                    request.system_prompt = (request.system_prompt or "").rstrip() + "\n\n" + block
+                    _append(block)
 
         if event.get_extra("social_context_triggered"):
             style = str(event.get_extra("social_context_reply_style") or "short")
@@ -992,7 +1019,7 @@ class SocialContextPlugin(
                 f"建议回复风格：{style}；回复意图：{intent}。"
                 "回复应自然、简短，像普通群成员一样加入话题。）"
             )
-            request.system_prompt = (request.system_prompt or "").rstrip() + "\n" + note
+            _append(note, sep="\n")
 
     @filter.on_decorating_result(priority=10)
     async def on_decorating_result(self, event: AstrMessageEvent):

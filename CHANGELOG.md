@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.8 - 2026-06-27
+
+- **重构：主回复 LLM 注入从 `system_prompt` 字符串拼接迁到 `extra_user_content_parts`**——`main.py:on_llm_request` 之前两段都走 `request.system_prompt = (request.system_prompt or "").rstrip() + "\n\n" + block` / `+ "\n" + note`，把群聊观察块和自主触发提示直接拼到系统提示词里。这有两个老问题：①动态块污染 LLM 前缀缓存（system 部分不再稳定可缓存，每条消息都重算 KV cache）；②跟 emotion_state_machine v0.9.x、livingmemory 等同仓插件的官方模式不一致。
+  - **新主路径**：`request.extra_user_content_parts.append(TextPart(text=block, type="text").mark_as_temp())`，写到用户消息末尾而不是 system prompt；`.mark_as_temp()` 触发 `ContentPart._no_save = True`，群聊观察块不进入对话历史——窗口外的旧 vibe / speaker 列表不会被后续轮次反复引用。
+  - **触发提示**（`social_context_triggered`）一并迁移，行为不变（仍然只在 judge 投了 yes 时追加）。
+  - **低版本兜底**：保留 `elif hasattr(request, "system_prompt")` 分支走原来的 `rstrip() + sep + text` 拼接；观察块 separator 仍是 `\n\n`，触发提示保持 `\n`（与 v0.8.7 行为完全一致），不破坏无 `extra_user_content_parts` 字段的 AstrBot 实例。
+  - **入口守卫升级**：`if not hasattr(request, "system_prompt"): return` → `if not hasattr(request, "system_prompt") and not hasattr(request, "extra_user_content_parts"): return`，未来 AstrBot 完全去掉 `system_prompt` 也不会报 AttributeError。
+  - **参考实现**：`astrbot_plugin_emotion_state_machine/main.py:on_llm_request`（v0.9.x 已迁，注释直接引用了 `astr_main_agent._append_image_caption`）和 `astrbot_plugin_livingmemory/core/event_handler_modules/memory_recall.py`（额外用 `.mark_as_temp()` 标临时）。
+- 测试：146 → 148 个用例（新增 `test_on_llm_request_uses_extra_user_content_parts_when_available` / `test_on_llm_request_appends_observation_block_to_extra_user_content_parts`，覆盖新路径 + `.mark_as_temp()` 的 `_no_save` 标记；旧 `test_on_llm_request_keeps_trigger_note_when_reply_inject_disabled` 保留作为低版本兜底回归）。148 passed / 0 failed。
+- ruff 0 issue。metadata.yaml v0.8.7 → v0.8.8。
+
 ## v0.8.7 - 2026-06-15
 
 - **调整：判断模型人格感知说明更明确**——`judge_persona_aware_enabled` 的配置说明改为强调“运行时读取 AstrBot 当前会话人格/默认人格的 system_prompt，并传给 judge”，避免误解为插件预填固定人格内容。

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.9 - 2026-06-27
+
+- **重构：judge 通道 LLM 调用从 `prompt=` 字符串迁到 `extra_user_content_parts`**——`_judge_should_reply` 之前直接 `provider.text_chat(prompt=prompt, ...)`，把整个决策 prompt（角色 + context_block + 当前消息 + 规则 + JSON 输出要求）当作用户主消息。和 v0.8.8 主回复通道的改造对齐：决策 prompt 现在以 `TextPart(text=prompt, type="text").mark_as_temp()` 形式写到 `extra_user_content_parts`，`prompt=None`。
+  - **好处**：① 与 emotion_state_machine v0.9.x / livingmemory 等同仓插件的官方模式完全统一——三个插件都走 `TextPart(...).mark_as_temp()` 写到 extra_user_content_parts；② persona 仍走 `system_prompt`（稳定部分），决策 prompt 走 user 末尾（动态部分），语义分层更清晰；③ judge 通道的 system 提示词现在只有 persona，**未来如果 AstrBot 对 judge provider 也启用 prefix cache，可以直接命中**（之前决策 prompt 拼到 prompt= 里时，每次群消息都会让 prompt 哈希变化，cache 命中率天然为 0）。
+  - **retry 路径同步**：`prompt += "\n\n请注意：..."` 的旧 retry 拼接改成 `retry_note` 局部变量，每次重试时拼到新的 `TextPart.text` 末尾，不再污染主 `prompt` 字符串。retry_note 仍只在重试时追加，第一次调用文本里不会出现。
+  - **行为不变**：模型的 system / user 看到的内容和 v0.8.8 完全一致（角色在 system、决策 prompt 整段在 user），只是从 user 主消息变成 user 末尾的 TextPart，OpenAI / Anthropic / Gemini 等 provider 对此都是结构化 user content，已确认 entities.py 路径会正确处理。
+  - **mark_as_temp() 在 judge 路径意义不大**（judge 没有持久化 history），但保持与 v0.8.8 主回复的模式一致，便于三个插件共构。
+  - **参考实现**：`astrbot_plugin_emotion_state_machine/main.py:on_llm_request`（v0.9.x 已迁）和 `astrbot_plugin_livingmemory/core/event_handler_modules/memory_recall.py`（同样 `.mark_as_temp()`）。
+- 测试：148 → 150 个用例（新增 `JudgeLlmCallTests` 类，含 `test_judge_call_uses_extra_user_content_parts` 验证新参数结构 + `.mark_as_temp()` + judge 成功路径；`test_judge_call_retry_appends_retry_note_to_text_part` 验证 retry 时 retry_note 追加到 TextPart.text 而非 prompt= 字符串）。150 passed / 0 failed。
+- ruff 0 issue（未变更）。metadata.yaml v0.8.8 → v0.8.9。
+
 ## v0.8.8 - 2026-06-27
 
 - **重构：主回复 LLM 注入从 `system_prompt` 字符串拼接迁到 `extra_user_content_parts`**——`main.py:on_llm_request` 之前两段都走 `request.system_prompt = (request.system_prompt or "").rstrip() + "\n\n" + block` / `+ "\n" + note`，把群聊观察块和自主触发提示直接拼到系统提示词里。这有两个老问题：①动态块污染 LLM 前缀缓存（system 部分不再稳定可缓存，每条消息都重算 KV cache）；②跟 emotion_state_machine v0.9.x、livingmemory 等同仓插件的官方模式不一致。

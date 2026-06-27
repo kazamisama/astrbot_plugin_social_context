@@ -858,13 +858,26 @@ class SocialContextPlugin(
 
         max_retries = self._cfg_int("judge_max_retries", 1, 0)
         content = ""
+        retry_note = ""
         for attempt in range(max_retries + 1):
             try:
+                # v0.8.9+：把 judge 决策 prompt 放到 extra_user_content_parts
+                # 而不是 prompt=，与 v0.8.8 主回复通道改造保持一致——同仓
+                # emotion_state_machine / livingmemory 的官方模式都是
+                # ``TextPart(text=..., type="text").mark_as_temp()`` 写到
+                # 用户消息末尾。persona_system_prompt 仍走 system_prompt。
+                # ``.mark_as_temp()`` 在 judge 路径意义不大（judge 没有
+                # 持久化 history），但保持模式一致便于未来共构。
                 response = await provider.text_chat(
-                    prompt=prompt,
+                    prompt=None,
                     contexts=[],
                     image_urls=[],
                     system_prompt=persona_system_prompt or "",
+                    extra_user_content_parts=[
+                        TextPart(
+                            text=prompt + retry_note, type="text"
+                        ).mark_as_temp()
+                    ],
                 )
                 content = (getattr(response, "completion_text", "") or "").strip()
                 data = _extract_json(content)
@@ -884,7 +897,7 @@ class SocialContextPlugin(
                 )
                 if attempt >= max_retries:
                     return JudgeResult(reasoning=f"判断失败: {exc}")
-                prompt += "\n\n请注意：你必须只返回合法 JSON，不要包含 Markdown 代码块或额外解释。"
+                retry_note = "\n\n请注意：你必须只返回合法 JSON，不要包含 Markdown 代码块或额外解释。"
 
         return JudgeResult(reasoning="未知判断失败")
 

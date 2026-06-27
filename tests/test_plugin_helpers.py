@@ -1356,6 +1356,113 @@ class PluginHelperTests(unittest.TestCase):
         self.assertTrue(any("本次回复由群聊状态判断主动触发" in t for t in texts))
 
 
+class JudgeLlmCallTests(unittest.TestCase):
+    """v0.8.9+：_judge_should_reply 调用 LLM 时的参数结构回归。"""
+
+    def setUp(self) -> None:
+        self.plugin = SocialContextPlugin.__new__(SocialContextPlugin)
+        self.plugin.config = _Cfg({})
+        self.plugin.groups = {}
+        self.plugin.users = {}
+        self.plugin._persona_cache = {}
+
+    def _make_event(self) -> _Event:
+        return _Event(group_id="group-1", sender_id="10001", message="hello")
+
+    def test_judge_call_uses_extra_user_content_parts(self) -> None:
+        """v0.8.9+：judge prompt 走 extra_user_content_parts 而不是 prompt=。"""
+        captured: dict = {}
+
+        class _Resp:
+            completion_text = '{"should_reply": true, "confidence": 0.9, "reasoning": "ok"}'
+
+        class _Prov:
+            async def text_chat(self, **kwargs):
+                captured.update(kwargs)
+                return _Resp()
+
+        class _Ctx:
+            def get_provider_by_id(self, pid):
+                return _Prov()
+
+        self.plugin.config = _Cfg({"judge_provider_id": "ok"})
+        self.plugin.context = _Ctx()
+        self.plugin.context.conversation_manager = _FakeConversationManager(
+            conversation=_FakeConversation(persona_id=None)
+        )
+        self.plugin.context.persona_manager = _FakePersonaManager()
+        self.plugin.groups["group-1"] = GroupContext()
+
+        result = asyncio.run(self.plugin._judge_should_reply(self._make_event(), "group-1"))
+
+        # 主路径：prompt=None
+        self.assertIsNone(captured.get("prompt"))
+        # system_prompt 仍是 persona
+        self.assertEqual(captured.get("system_prompt"), "")
+        # decision prompt 以 TextPart 形式写到 extra_user_content_parts
+        parts = captured.get("extra_user_content_parts")
+        self.assertIsNotNone(parts)
+        self.assertEqual(1, len(parts))
+        part = parts[0]
+        # 内容包含决策 prompt 的关键标识
+        self.assertIn("你是群聊机器人是否应该主动回复的判断模型", part.text)
+        self.assertIn("请只返回 JSON", part.text)
+        # .mark_as_temp() 标记
+        self.assertTrue(getattr(part, "_no_save", False))
+        # judge 成功：should_reply + confidence 解析正确
+        self.assertTrue(result.should_reply)
+        self.assertGreaterEqual(result.confidence, 0.65)
+
+    def test_judge_call_retry_appends_retry_note_to_text_part(self) -> None:
+        """v0.8.9+：retry 时 retry_note 追加到 TextPart.text，不再污染 prompt=。"""
+        call_count = {"n": 0}
+        captured_parts: list = []
+
+        class _Prov:
+            async def text_chat(self, **kwargs):
+                call_count["n"] += 1
+                captured_parts.append(list(kwargs.get("extra_user_content_parts") or []))
+                if call_count["n"] == 1:
+                    # 第一次返回非法 JSON
+                    class _Bad:
+                        completion_text = "这不是 JSON"
+                    return _Bad()
+                # 第二次返回合法 JSON
+                class _Ok:
+                    completion_text = '{"should_reply": false, "confidence": 0.3, "reasoning": "skip"}'
+                return _Ok()
+
+        class _Ctx:
+            def get_provider_by_id(self, pid):
+                return _Prov()
+
+        self.plugin.config = _Cfg({"judge_provider_id": "ok", "judge_max_retries": 1})
+        self.plugin.context = _Ctx()
+        self.plugin.context.conversation_manager = _FakeConversationManager(
+            conversation=_FakeConversation(persona_id=None)
+        )
+        self.plugin.context.persona_manager = _FakePersonaManager()
+        self.plugin.groups["group-1"] = GroupContext()
+
+        result = asyncio.run(self.plugin._judge_should_reply(self._make_event(), "group-1"))
+
+        # 重试 1 次，共 2 次调用
+        self.assertEqual(call_count["n"], 2)
+        # 两次都走 extra_user_content_parts 路径
+        self.assertEqual(len(captured_parts), 2)
+        for parts in captured_parts:
+            self.assertIsNotNone(parts)
+            self.assertEqual(1, len(parts))
+        # 第一次的 TextPart 没有 retry_note
+        self.assertNotIn("请注意：你必须只返回合法 JSON", captured_parts[0][0].text)
+        # 第二次的 TextPart 追加了 retry_note
+        self.assertIn("请注意：你必须只返回合法 JSON", captured_parts[1][0].text)
+        # 第二次依然 mark_as_temp
+        self.assertTrue(getattr(captured_parts[1][0], "_no_save", False))
+        # 重试成功 → should_reply=False
+        self.assertFalse(result.should_reply)
+
+
 class _FakePersona:
     def __init__(self, system_prompt: str = "") -> None:
         self.system_prompt = system_prompt

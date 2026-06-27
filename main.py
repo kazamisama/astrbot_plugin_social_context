@@ -103,10 +103,8 @@ class SocialContextPlugin(
         self._stale_prune_task: asyncio.Task | None = None
         # v0.7.0+：群成员名册内存缓存 group_id -> (timestamp, members_list, truncated)
         self._member_cache: dict[str, tuple[float, list, bool]] = {}
-        # v0.8.0+：emotion_state_machine 桥接：bot 主动回复后打轻量 signal 的 scope 节流表
-        self._emotion_signal_last: dict[str, float] = {}
-        # v0.8.1+：emotion_state_machine 桥接：signal 被 disabled_signals 拒绝时 warn 去重表
-        self._emotion_disabled_warn_last: dict[str, float] = {}
+        # v0.8.12+：emotion_bridge 砍掉 self-reply signal 的 self-reply 节流表 + warn
+        # 去重表——这两块职责 v0.8.12 起迁回 ESM 端（self._signal_last 等）。
 
         self.data_dir = self._resolve_data_dir()
         self.state_path = self._resolve_state_path()
@@ -817,6 +815,18 @@ class SocialContextPlugin(
         self._consume_autonomous_reply_budget(group, now)
         self._record_last_judge(scope, result, triggered=True, persona_id=result.persona_id)
         group.last_bot_reply_time = now
+        # v0.8.12+：judge=yes 后显式通知 ESM，让它打 self-reply signal。
+        # 调用必须在 ``event.is_at_or_wake_command = True`` 之前——
+        # ESM.apply_self_reply_signal 内部防御性检查 is_at_or_wake_command，
+        # 此处还应是 False（用户原消息没 @ bot）才能让 signal 真打出去。
+        emo = self._get_emotion_plugin()
+        if emo is not None:
+            try:
+                await emo.apply_self_reply_signal(event)
+            except Exception as exc:  # pragma: no cover - 防御性兜底
+                logger.debug(
+                    f"[social_context] apply_self_reply_signal 失败: {exc}"
+                )
         event.is_at_or_wake_command = True
         event.set_extra("social_context_triggered", True)
         event.set_extra("social_context_judge_reason", result.reasoning)
@@ -846,10 +856,27 @@ class SocialContextPlugin(
         if not context_block:
             context_block = "## Social Context 判断参考\n暂无可用状态。"
 
-        # v0.8.0+：拼接 emotion_state_machine 的状态块（缺失/异常时静默降级）
-        emotion_block = self._build_emotion_block(scope, str(event.get_sender_id()))
-        if emotion_block:
-            context_block = context_block + "\n\n" + emotion_block
+        # v0.8.12+：emotion 状态块走 ESM v0.10.0 新增的 to_text_part 接口，
+        # 返独立 TextPart（已 mark_as_temp），与 social context 9 块平级。
+        # 替代之前的 _build_emotion_block 字符串拼接路径（v0.8.0~v0.8.11）。
+        # 缺失/异常/插件 < v0.10.0 时降级到字符串拼接。
+        emo_plugin = self._get_emotion_plugin()
+        emotion_part = None
+        if emo_plugin is not None:
+            try:
+                # v0.10.0+ 才有 to_text_part；老版本 NoneType 走降级
+                to_text_part = getattr(emo_plugin, "to_text_part", None)
+                if callable(to_text_part):
+                    emotion_part = to_text_part(scope, str(event.get_sender_id()))
+            except Exception as exc:
+                logger.debug(f"[social_context] to_text_part 失败: {exc}")
+        if emotion_part is not None and emotion_part.text:
+            extra_parts.append(emotion_part)
+        else:
+            # 降级路径（ESM v0.10.0 之前）：字符串拼接，与 v0.8.0~v0.8.11 行为一致
+            emotion_block = self._build_emotion_block(scope, str(event.get_sender_id()))
+            if emotion_block:
+                context_block = context_block + "\n\n" + emotion_block
 
         threshold = self._cfg_float("judge_reply_threshold", 0.65, 0.0)
         prompt_template = self._config_template_or_default(
@@ -1111,14 +1138,9 @@ class SocialContextPlugin(
             chain.insert(1, AtComponent(qq=event.get_sender_id()))
             chain.insert(2, PlainComponent(text="\u200b \u200b"))
 
-        # v0.8.0+：bot 主动回复后给 emotion_state_machine 打一个轻量正向 signal
-        try:
-            self._apply_emotion_self_reply_signal(
-                scope=scope,
-                user_id=str(event.get_sender_id() or ""),
-            )
-        except Exception as exc:  # pragma: no cover - 防御性兜底
-            logger.debug(f"[social_context] emotion self-reply signal 调用失败: {exc}")
+        # v0.8.12+：bot 主动回复的 self-reply signal 改由 ESM.apply_self_reply_signal
+        # 在 judge=yes 阶段同步处理（main.py 上面），这里不再调。
+        # 保留日志。
 
         logger.debug(
             f"[social_context] 智能引用：原消息 {target_id} 后被插 {pushed} 条"

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.12 - 2026-06-27
+
+- **重构：emotion_bridge 砍掉 self-reply signal 接入点（3→2）**——v0.8.12 起 social_context 不再管"bot 主动回复后给 ESM 打 signal"的事，迁回 ESM 端。理由：① ESM 自己 v0.10.0+ 新增 `apply_self_reply_signal(event)` 方法，内部用 `TalkWillingnessState` 决策（reversal zone / consecutive-apply cap 等），比 social_context 的简单节流更精细；② social_context 是"观察者"，不该管 emotion 自我反馈。
+  - **ESM v0.10.0+ 强依赖**——social_context v0.8.12+ 调用了 `emo.apply_self_reply_signal(event)` 和 `emo.to_text_part(scope, user_id)`，必须升级到 ESM v0.10.0+。
+  - **judge=yes 后显式调用 `emo.apply_self_reply_signal(event)`**（main.py:_should_i_reply_or_something 末尾）。调用位置必须在 `event.is_at_or_wake_command = True` 之前——ESM 内部防御性检查 `is_at_or_wake_command`（用户原消息没 @ bot 时才应该是 False），设了 True 之后 signal 不会真打出去。
+  - **接入点 2 改走 `emo.to_text_part()` 主路径**——emotion block 现在是**独立 TextPart**（已 `mark_as_temp`），与 social context 9 块平级，不再拼到同一个 TextPart 里。降级路径保留 `_build_emotion_block`（ESM v0.10.0 之前或 `to_text_part` 不可用时仍可工作）。
+  - **删除项**：`mixins/emotion_bridge.py` 删 `_apply_emotion_self_reply_signal`（~70 行）、HTML sentinel regex（~20 行）；main.py 删 `self._emotion_signal_last` / `self._emotion_disabled_warn_last` 两个内部字段、`on_decorating_result` 里调 `_apply_emotion_self_reply_signal` 的整段；`_conf_schema.json` 删 4 个 `emotion_self_reply_*` 配置项；`tests/test_emotion_bridge.py` 删 12 个 self-reply 相关测试。
+  - **降级行为**：ESM < v0.10.0 时，judge 走字符串拼接（旧路径），self-reply signal 完全静默 no-op（与 v0.8.11 之前行为一致——v0.8.11 那个 warn 在没装 ESM 的情况下原本就不打 signal）。
+- 测试：158 → 149 个用例（-12 self-reply 相关 + 7 个新 v0.8.12 测试：3 个 `to_text_part` 路径 + 4 个 `apply_self_reply_signal` 流程）。149 passed / 0 failed。
+- ruff 0 issue（未变更）。metadata.yaml v0.8.11 → v0.8.12。
+
 ## v0.8.11 - 2026-06-27
 
 - **改进：`_resolve_judge_persona` 拿不到人格时打 warning**——之前所有失败路径都走 `logger.debug` + 静默返 `(None, None)`，管理员很难发现「judge 通道一直在无身份运行」。现在所有路径都失败时打 `logger.warning`，提示可能的原因：① 未配默认人格 ② 会话人格 prompt 为空 ③ conversation_manager / persona_manager 未注册。同时把 `umo` 写进 warning 便于定位群/私聊。

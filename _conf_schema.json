@@ -305,29 +305,5 @@
         "hint": "v0.8.0+。开启后，social_context 会在拼判断模型 prompt 时把 emotion_state_machine 的 build_prompt_block 拼到 context_block 后面，让 judge 也能'带着情绪'决策。",
         "type": "bool",
         "default": true
-    },
-    "emotion_self_reply_signal_enabled": {
-        "description": "⑩ 情绪状态机集成 / bot 主动回复后打轻量 signal（on_decorating_result 接入点）",
-        "hint": "v0.8.0+。开启后，bot 完成回复时会给 emotion_state_machine 调一次 apply_signal（默认 signal=friendly, intensity=0.3, 最小间隔 30 秒）。让情绪引擎知道 bot 仍在主动互动，对长期情绪状态有温和正反馈。",
-        "type": "bool",
-        "default": true
-    },
-    "emotion_self_reply_signal": {
-        "description": "⑩ 情绪状态机集成 / bot 回复后打的 signal 名",
-        "hint": "v0.8.0+。必须是 emotion_state_machine 引擎认可的 signal 名之一（praise/thanks/friendly/mention/poke/technical/question/comfort/insult/pressure/silence/success/failure），否则该次 apply_signal 会被静默忽略。默认 friendly（温和正反馈，valence +0.05）。",
-        "type": "string",
-        "default": "friendly"
-    },
-    "emotion_self_reply_intensity": {
-        "description": "⑩ 情绪状态机集成 / bot 回复后打的 signal 强度",
-        "hint": "v0.8.0+。范围 0~2，越大对情绪状态影响越强。默认 0.3，轻量反馈。",
-        "type": "float",
-        "default": 0.3
-    },
-    "emotion_self_reply_min_interval_seconds": {
-        "description": "⑩ 情绪状态机集成 / bot 回复后打 signal 的最小间隔（秒，scope 维度）",
-        "hint": "v0.8.0+。按当前会话 scope 维度做节流，避免每条 bot 回复都打一次 signal 让情绪状态被自己刷高。设 0 表示不节流。默认 30。",
-        "type": "float",
-        "default": 30.0
     }
 }

@@ -15,8 +15,25 @@
   - `reply_step`：原消息之后被插 ≥ N 条新消息时，在回复头部插入 `Reply` 组件（带可选 `At`），避免多人活跃群中上下文错位。
 - 提供 `/social_context` 查看当前会话状态。
 - 管理员可用 `/social_context_reset` 重置当前会话状态。
-- v0.8.0+ 可选接入 `astrbot_plugin_emotion_state_machine` 情绪状态机：把用户消息喂给情绪引擎、在 judge prompt 拼入情绪状态块、bot 主动回复后打轻量正向 signal。emotion 插件完全可选，缺失时静默降级。
+- v0.8.0+ 可选接入 `astrbot_plugin_emotion_state_machine` 情绪状态机：把用户消息喂给情绪引擎、在 judge prompt 拼入情绪状态块。emotion 插件完全可选，缺失时静默降级。
+  - v0.8.12+ 强依赖 ESM v0.10.0+：`apply_self_reply_signal(event)`（judge=yes 后通知 ESM 打 self-reply signal）和 `to_text_part(scope, user_id)`（judge prompt 拼入 emotion 块，主路径）由 ESM v0.10.0 新增。详见下文"依赖要求"。
 - JSON 持久化，默认保存到 `data/plugin_data/astrbot_plugin_social_context/social_context_state.json`。
+
+## 依赖要求
+
+> **本插件 v0.8.12+ 调用了 [`astrbot_plugin_emotion_state_machine`](https://github.com/kazamisama/astrbot_plugin_emotion_state_machine) v0.10.0 新增的两个 API：`to_text_part()` 和 `apply_self_reply_signal()`，构成强依赖。**
+
+- **如果没装 ESM**：emotion 注入会**静默 no-op**（social_context 检测不到 emotion 插件时整条 emotion 链路降级），但主流程（消息观察、judge 决策、tier 压缩、智能引用等）仍正常工作。
+- **如果装了 ESM 但 < v0.10.0**：judge 通道会**降级到字符串拼接**（`build_prompt_block` 仍可用但缺 `to_text_part`），self-reply signal 路径**直接缺失**——bot 主动回复的"自我反馈"机制没了，但 emotion 状态仍会被用户消息驱动。
+- **如果装了 ESM v0.10.0+**：完整功能——emotion block 走独立 TextPart、self-reply signal 由 ESM `apply_self_reply_signal(event)` 接管。
+
+**推荐安装**：
+
+```bash
+pip install astrbot-plugin-emotion-state-machine>=0.10.0
+```
+
+或在 AstrBot 管理面板把 emotion_state_machine 升级到 v0.10.0+。
 
 ## 输出微调（v0.5.0+）
 

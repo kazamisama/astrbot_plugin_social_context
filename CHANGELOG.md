@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.14 - 2026-06-30
+
+- **新功能：ESM 精力机制接入**——`_judge_should_reply` 决策链路新增两层精力感知：
+  - **硬门槛**（`judge_energy_gate_enabled`，默认 true）：精力 < `judge_energy_gate_threshold`（默认 0.2）时直接跳过判断模型调用，零 token 消耗。
+  - **软注入**（`judge_energy_inject_enabled`，默认 true）：bot 当前精力值作为 `{bot_energy}` 变量注入 judge prompt，让判断模型自主考虑疲劳程度。
+  - `mixins/emotion_bridge.py` 新增 `_get_bot_energy(scope)` 方法，从 ESM `get_bot_energy()` 拉取 [0.0, 1.0] 精力值；ESM 不可用时静默降级（硬门槛不触发，prompt 变量填 "1.00（精力系统不可用，假定精力充沛）"）。
+  - `_conf_schema.json` judge 区域新增 3 个配置项：`judge_energy_gate_enabled` / `judge_energy_gate_threshold` / `judge_energy_inject_enabled`。
+  - 默认 judge prompt 新增 "Bot 当前状态" 块，描述精力值语义和疲劳阈值建议。
+- metadata.yaml v0.8.13 → v0.8.14。
+
 ## v0.8.13 - 2026-06-27
 
 - **重构：`_conf_schema.json` 按功能方向分框（engram 风格）**——v0.8.13 起 schema 从扁平（所有 key 顶层平铺，description 用 `① 基础` `② 群聊状态观察` `③ 正式回复注入` ... 序号分组）改为嵌套（11 个顶层 `type: object` 框，每个 `items` 包含具体字段）。参考 `astrbot_plugin_engram_core` 的 schema 结构。

@@ -154,6 +154,37 @@ class EmotionBridgeMixin:
         return block.strip()
 
 
+    # ------------------------------------------------------------------
+    # 接入点 3：bot 精力查询（_judge_should_reply 调用）
+    # v0.8.13+：从 ESM 拉取 bot 当前精力值，供判断模型和硬门槛使用。
+    # ------------------------------------------------------------------
+
+    def _get_bot_energy(self, scope: str) -> float | None:
+        """从 ESM 拉取 bot 当前精力；不可用/异常时返回 None。
+
+        ESM.get_bot_energy 返回 [0.0, 1.0]，1.0=精力充沛，0.0=完全耗尽。
+        scope 透传给 ESM 以支持 per-scope 精力桶（取决于 ESM 的
+        energy_per_scope 配置）。
+        """
+        if not self._cfg_bool("judge_energy_gate_enabled", True) and not self._cfg_bool(
+            "judge_energy_inject_enabled", True
+        ):
+            return None
+        emo = self._get_emotion_plugin()
+        if emo is None:
+            return None
+        try:
+            getter = getattr(emo, "get_bot_energy", None)
+            if getter is None:
+                return None
+            # get_bot_energy 是同步方法，不需要 await
+            energy = float(getter(scope))
+            return energy
+        except Exception as exc:
+            logger.debug(f"[social_context] get_bot_energy 失败: {exc}")
+            return None
+
+
 # Re-export the logger so ``from .emotion_bridge import logger`` keeps
 # working for any external consumer that imported the symbol previously.
 _logging = logging.getLogger(__name__)

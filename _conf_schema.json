@@ -163,6 +163,24 @@
                 "hint": "逗号分隔。判断模型上下文会用这些关键词估算当前消息是否与 bot 相关，例如提到 bot 名字、机器人、插件、模型、配置等。",
                 "type": "string",
                 "default": "雪莉,bot,机器人,助手,插件,模型,配置"
+            },
+            "judge_energy_gate_enabled": {
+                "description": "精力硬门槛（v0.8.13+）",
+                "hint": "开启后，bot 精力低于 judge_energy_gate_threshold 时直接跳过判断模型调用（不消耗 LLM token）。精力值来自 astrbot_plugin_emotion_state_machine 的 get_bot_energy()；ESM 不可用时此选项静默无效。",
+                "type": "bool",
+                "default": true
+            },
+            "judge_energy_gate_threshold": {
+                "description": "精力硬门槛阈值（v0.8.13+）",
+                "hint": "精力值低于此阈值时跳过判断。1.0=精力充沛，0.0=完全耗尽。建议 0.15~0.30；设 0 则只在精力为 0 时才跳过。",
+                "type": "float",
+                "default": 0.2
+            },
+            "judge_energy_inject_enabled": {
+                "description": "精力注入判断 prompt（v0.8.13+）",
+                "hint": "开启后，bot 当前精力值会作为 {bot_energy} 变量注入判断模型的 prompt，让 judge 考虑疲劳程度做决策。精力值来自 ESM；ESM 不可用时降级为假定精力充沛（1.00）。",
+                "type": "bool",
+                "default": true
             }
         }
     },

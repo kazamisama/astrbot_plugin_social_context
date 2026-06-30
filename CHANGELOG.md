@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.15 - 2026-07-01
+
+- **重构：4 个 prompt 模板归位到对应功能框**——v0.8.15 起删除顶层 `prompt_templates` 框，按功能归类：
+  - `reply_injection` 下：原 `reply_prompt_template`（群聊观察注入）+ 原 `triggered_reply_hint_template`（自主触发风格提示）。
+  - `judge` 下：原 `judge_prompt_template`（判断模型上下文块）+ 原 `judge_decision_prompt`（判断决策 prompt）。
+  - 4 个模板按"注入到哪个 LLM"分组：主回复 LLM → `reply_injection`，judge 模型 → `judge`。
+  - hint/description 全面更新：标注模板依赖关系、`{context_block}` 来源、占位符全集、`version` 标记（v0.8.14+）。
+- **新功能：自主触发风格提示模板化（v0.8.14 遗珠）**——`on_llm_request` 里 `social_context_triggered` 分支原本是硬编码 note，v0.8.15 起改为可编辑模板 `triggered_reply_hint_template`，支持占位符 `{style}` `{intent}` `{bot_energy}`，注入主回复 LLM 用户消息末尾告诉它「你是主动插嘴的」。精力偏低（<0.3）时主 LLM 会被提示"语气可稍显慵懒、句子更短"，形成"judge prompt 软抑制 + 主 LLM 语气收敛"双层闭环。
+- metadata.yaml v0.8.14 → v0.8.15。
+
 ## v0.8.14 - 2026-06-30
 
 - **新功能：ESM 精力机制接入**——`_judge_should_reply` 决策链路新增两层精力感知：

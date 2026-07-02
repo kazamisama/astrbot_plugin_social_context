@@ -850,7 +850,7 @@ class SocialContextPlugin(
         if not provider:
             return JudgeResult(reasoning=f"provider 不存在: {provider_id}")
 
-        # v0.8.13+：精力硬门槛——精力过低时直接跳过判断模型调用
+        # v0.8.14+：精力硬门槛——精力过低时直接跳过判断模型调用
         energy_gate_enabled = self._cfg_bool("judge_energy_gate_enabled", True)
         energy_gate_threshold = self._cfg_float("judge_energy_gate_threshold", 0.2, 0.0)
         if energy_gate_enabled:
@@ -904,7 +904,7 @@ class SocialContextPlugin(
             "message": event.message_str or "",
             "threshold": f"{threshold:.2f}",
         }
-        # v0.8.13+：注入 bot 精力，让判断模型考虑疲劳程度
+        # v0.8.14+：注入 bot 精力，让判断模型考虑疲劳程度
         if self._cfg_bool("judge_energy_inject_enabled", True):
             bot_energy_for_prompt = self._get_bot_energy(scope)
             if bot_energy_for_prompt is not None:

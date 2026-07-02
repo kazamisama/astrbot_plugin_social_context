@@ -343,6 +343,96 @@ social_context 计算 scope 时优先调用 emotion 自己的 `get_scope(event)`
 
 老 ESM（v0.2.0）没有这两个方法 → bridge 走 `getattr(..., None) or fallback` 路径静默降级，行为同 v0.8.0。
 
+## ESM 精力机制接入（v0.8.14+）
+
+social_context 通过 emotion_bridge 调用 ESM v0.10.0+ 暴露的 `get_bot_energy()` 接口，在判断链路注入 bot 当前精力值，让 bot 在疲劳时主动降低回复意愿 + 收敛回复语气。**所有接入点对 ESM 不可用静默降级**——和上面"情绪状态机集成"段一样，缺 ESM 完全不影响主流程。
+
+精力值范围 `[0.0, 1.0]`：1.0 = 精力充沛，0.0 = 完全耗尽。ESM 内部以 ~0.01/秒的速率缓慢恢复，每次 self_reply 消耗 0.08。
+
+### 两层精力感知
+
+| 层 | 配置 | 行为 |
+|---|---|---|
+| **硬门槛** | `judge_energy_gate_enabled` (默认 true) + `judge_energy_gate_threshold` (默认 0.2) | bot 精力 < 阈值时直接跳过判断模型调用，返回 `JudgeResult(reasoning="精力不足...")`，**零 LLM token 消耗** |
+| **软注入** | `judge_energy_inject_enabled` (默认 true) | bot 当前精力值作为 `{bot_energy}` 变量注入 `judge_decision_prompt`，让判断模型自主降权（"精力低于 0.3 时已属疲劳，应大幅降低主动插话意愿"） |
+
+两层是**叠加**的：硬门槛是粗粒度短路，软注入是细粒度调节。可以独立开关（`gate_enabled=False, inject_enabled=True` 也合法）。
+
+### 第三层：主回复 LLM 语气收敛（v0.8.15+）
+
+精力感知还延伸到主回复阶段。当 judge 模型决定主动回复后，主回复 LLM 的 `triggered_reply_hint_template` 会包含 `Bot 当前精力：{bot_energy}/1.00`，精力偏低（<0.3）时主 LLM 被提示"语气可稍显慵懒、句子更短"。形成完整的 **judge 决策抑制 → 主回复语气收敛**双层闭环。
+
+详见下一节"自主触发风格提示"。
+
+### 配置示例
+
+```jsonc
+"judge_energy_gate_enabled": true,
+"judge_energy_gate_threshold": 0.2,
+"judge_energy_inject_enabled": true,
+```
+
+### 降级语义
+
+- ESM 没装 / 没注册 → `_get_bot_energy()` 返 None → 硬门槛跳过 + 软注入用 `"1.00（精力系统不可用，假定精力充沛）"` 占位
+- ESM 没 `get_bot_energy` 方法（< v0.10.x）→ 同上
+- ESM.get_bot_energy 抛任何异常 → `try/except` 静默吞掉，返 None
+- ESM 关闭精力系统（内部 AttributeError）→ 返 None
+- **ESM 不可用时精力机制完全静默**，不报错、不刷日志（debug 级别）
+
+### 何时重启 §3 阶段三
+
+当前 ESM 是**可选依赖**（缺失时静默降级）。如果未来产品决定把 ESM 列为强依赖，则 `emotion_bridge.py` 可整文件删除——所有精力 / 情绪接入点直接调 ESM，无需 try/except 兜底。详见 `todo.md` §3 定论段。
+
+## 自主触发风格提示（v0.8.15+）
+
+`on_llm_request` 里有一段**自主触发提示**，告诉主回复 LLM「你不是被 @ 的，你是主动插嘴的」。v0.8.15 起这段从硬编码改为可编辑模板 `triggered_reply_hint_template`，放在 `reply_injection` 区。
+
+### 默认模板
+
+```text
+（注意：本次回复由群聊状态判断主动触发，不是用户明确点名。
+建议回复风格：{style}；回复意图：{intent}。
+Bot 当前精力：{bot_energy}/1.00。
+回复应自然、简短，像普通群成员一样加入话题。
+若精力偏低（<0.3），语气可稍显慵懒、句子更短。）
+```
+
+### 占位符
+
+| 占位符 | 来源 |
+|---|---|
+| `{style}` | judge 模型输出的 `reply_style`（short / normal / playful / technical / comforting） |
+| `{intent}` | judge 模型输出的 `reply_intent`（answer_question / join_topic / clarify / lighten_mood / acknowledge_poke / avoid_interrupting） |
+| `{bot_energy}` | ESM.get_bot_energy() 当前值；ESM 不可用时默认 `1.00` |
+
+### 触发条件
+
+只有 judge=yes 时才注入（即 `event.social_context_triggered=True`）。用户 @ / 唤醒的正常回复不走这个分支。注入的 TextPart 调用 `.mark_as_temp()`，不进对话历史。
+
+### 自定义模板
+
+直接在配置里覆盖 `triggered_reply_hint_template` 即可。例如想完全去掉括号提示：
+
+```text
+[自主插话] 风格={style} 意图={intent} 精力={bot_energy}
+```
+
+模板格式错误时 `_format_template` 自动回退到默认模板，不影响主流程。
+
+## 4 prompt 模板归位（v0.8.15+）
+
+v0.8.15 起 4 个可编辑 prompt 模板按"注入到哪个 LLM"分组归位：
+
+| 模板 | 位置 | 注入目标 | 用途 |
+|---|---|---|---|
+| `reply_prompt_template` | `reply_injection` | **主回复 LLM** | 群聊观察注入（仅 reply_inject_enabled=true 时生效） |
+| `triggered_reply_hint_template` | `reply_injection` | **主回复 LLM** | 自主触发风格提示（见上节） |
+| `judge_prompt_template` | `judge` | **judge 模型** | 上下文块（vibe / 戳一戳 / 历史摘要等），塞进 `{context_block}` |
+| `judge_decision_prompt` | `judge` | **judge 模型** | 外层包装 prompt，含 `Bot 当前状态` 块、`{bot_energy}` 注入 |
+
+旧的 `prompt_templates` 顶层框 v0.8.15 已删除。**数据层扁平结构不变**——你之前在 WebUI 配的 `reply_prompt_template` 等 key 仍然有效，只是分类位置变了。
+
 ## 设计边界
 
 v0.4.0 起插件可以可选地自主判断是否回复，但仍保持轻量定位：

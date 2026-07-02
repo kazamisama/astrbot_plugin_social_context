@@ -64,6 +64,9 @@ class _FakeEmotionStar:
 
     v0.8.12+：方法列表从 3 个简化到 2 个（observe_text + to_text_part）。
     build_prompt_block 保留作降级路径。
+
+    v0.8.14+：新增 get_bot_energy（精力查询），供 social_context 硬门槛
+    + 软注入使用。
     """
 
     def __init__(
@@ -75,6 +78,8 @@ class _FakeEmotionStar:
         raise_on_observe: bool = False,
         raise_on_block: bool = False,
         raise_on_text_part: bool = False,
+        bot_energy: float | None = 1.0,
+        raise_on_get_bot_energy: bool = False,
     ) -> None:
         self._scope_for_event = scope_for_event
         self._prompt_block = prompt_block
@@ -82,9 +87,12 @@ class _FakeEmotionStar:
         self._raise_on_observe = raise_on_observe
         self._raise_on_block = raise_on_block
         self._raise_on_text_part = raise_on_text_part
+        self._bot_energy = bot_energy
+        self._raise_on_get_bot_energy = raise_on_get_bot_energy
         self.observe_calls: list[dict] = []
         self.block_calls: list[dict] = []
         self.text_part_calls: list[dict] = []
+        self.get_bot_energy_calls: list[dict] = []
 
     def get_scope(self, event: object) -> str:
         return self._scope_for_event
@@ -110,6 +118,15 @@ class _FakeEmotionStar:
         if self._raise_on_text_part:
             raise RuntimeError("emotion to_text_part 故意失败")
         return self._text_part
+
+    def get_bot_energy(self, scope: str | None = None) -> float:
+        """v0.10.0+ 精力查询。返 [0.0, 1.0]；None 表示关闭。"""
+        self.get_bot_energy_calls.append({"scope": scope})
+        if self._raise_on_get_bot_energy:
+            raise RuntimeError("emotion get_bot_energy 故意失败")
+        if self._bot_energy is None:
+            raise AttributeError("energy disabled in this fake")
+        return self._bot_energy
 
 
 def _make_plugin(config: dict | None = None) -> SocialContextPlugin:
@@ -417,6 +434,109 @@ class SelfReplySignalTests(unittest.TestCase):
                 asyncio.run(emo.apply_self_reply_signal(SimpleNamespace()))
             except RuntimeError:
                 pass  # main.py logger.debug 后继续
+
+
+class EmotionBridgeEnergyTests(unittest.TestCase):
+    """v0.8.14+：ESM 精力查询接入点测试。
+
+    覆盖 _get_bot_energy 方法的：
+      - 缺失/不可用场景（ESM 没 get_bot_energy / 抛异常 / 缺失整体）
+      - 正常返回 [0.0, 1.0]
+      - 双重开关（gate_enabled + inject_enabled）组合
+    """
+
+    def setUp(self) -> None:
+        self.plugin = _make_plugin()
+
+    # ---- _get_bot_energy 缺失场景 ----
+
+    def test_get_bot_energy_esm_missing_returns_none(self) -> None:
+        """ESM 整体缺失 → 返 None。"""
+        # context.get_registered_star 返回 None
+        self.plugin.context.get_registered_star = lambda _name: None  # type: ignore[attr-defined]
+        result = self.plugin._get_bot_energy("g-1")
+        self.assertIsNone(result)
+
+    def test_get_bot_energy_esm_raises_returns_none(self) -> None:
+        """ESM 抛异常 → 静默返 None。"""
+
+        def _boom(_name):
+            raise RuntimeError("registry hiccup")
+
+        self.plugin.context.get_registered_star = _boom  # type: ignore[attr-defined]
+        result = self.plugin._get_bot_energy("g-1")
+        self.assertIsNone(result)
+
+    def test_get_bot_energy_method_missing_returns_none(self) -> None:
+        """ESM 没有 get_bot_energy 方法 → 返 None（hasattr 防御性默认）。"""
+        # 老 ESM < v0.10.x 没 get_bot_energy
+        star = SimpleNamespace(observe_text=lambda **kw: None)
+        _attach_emotion(self.plugin, star)
+        result = self.plugin._get_bot_energy("g-1")
+        self.assertIsNone(result)
+
+    def test_get_bot_energy_method_raises_returns_none(self) -> None:
+        """ESM.get_bot_energy 抛异常 → 静默返 None。"""
+        star = _FakeEmotionStar(raise_on_get_bot_energy=True)
+        _attach_emotion(self.plugin, star)
+        result = self.plugin._get_bot_energy("g-1")
+        self.assertIsNone(result)
+        # 调用被记录，但异常被吞掉
+        self.assertEqual(len(star.get_bot_energy_calls), 1)
+
+    def test_get_bot_energy_both_disabled_returns_none_early(self) -> None:
+        """gate + inject 都关闭 → 直接返 None，连 ESM 都不查。"""
+        star = _FakeEmotionStar()
+        _attach_emotion(self.plugin, star)
+        self.plugin.config["judge_energy_gate_enabled"] = False
+        self.plugin.config["judge_energy_inject_enabled"] = False
+        result = self.plugin._get_bot_energy("g-1")
+        self.assertIsNone(result)
+        # ESM 没被调用（短路优化）
+        self.assertEqual(len(star.get_bot_energy_calls), 0)
+
+    # ---- _get_bot_energy 正常路径 ----
+
+    def test_get_bot_energy_normal_returns_float(self) -> None:
+        """正常路径：返 ESM.get_bot_energy(scope) 的 float。"""
+        star = _FakeEmotionStar(bot_energy=0.35)
+        _attach_emotion(self.plugin, star)
+        result = self.plugin._get_bot_energy("g-1")
+        self.assertEqual(result, 0.35)
+        self.assertEqual(star.get_bot_energy_calls, [{"scope": "g-1"}])
+
+    def test_get_bot_energy_passes_scope(self) -> None:
+        """scope 透传给 ESM（per-scope 精力桶支持）。"""
+        star = _FakeEmotionStar(bot_energy=0.5)
+        _attach_emotion(self.plugin, star)
+        self.plugin._get_bot_energy("group-special")
+        self.assertEqual(star.get_bot_energy_calls[-1], {"scope": "group-special"})
+
+    def test_get_bot_energy_only_gate_enabled_proceeds(self) -> None:
+        """只开 gate，关闭 inject → 仍能查能量（注入路径会被早返）。"""
+        star = _FakeEmotionStar(bot_energy=0.15)
+        _attach_emotion(self.plugin, star)
+        self.plugin.config["judge_energy_gate_enabled"] = True
+        self.plugin.config["judge_energy_inject_enabled"] = False
+        result = self.plugin._get_bot_energy("g-1")
+        self.assertEqual(result, 0.15)
+        self.assertEqual(len(star.get_bot_energy_calls), 1)
+
+    def test_get_bot_energy_only_inject_enabled_proceeds(self) -> None:
+        """只开 inject，关闭 gate → 仍能查能量。"""
+        star = _FakeEmotionStar(bot_energy=0.85)
+        _attach_emotion(self.plugin, star)
+        self.plugin.config["judge_energy_gate_enabled"] = False
+        self.plugin.config["judge_energy_inject_enabled"] = True
+        result = self.plugin._get_bot_energy("g-1")
+        self.assertEqual(result, 0.85)
+
+    def test_get_bot_energy_clamped_to_unit_range(self) -> None:
+        """返回 0.0 / 1.0 边界值正常工作。"""
+        for v in (0.0, 1.0):
+            star = _FakeEmotionStar(bot_energy=v)
+            _attach_emotion(self.plugin, star)
+            self.assertEqual(self.plugin._get_bot_energy("g-1"), v)
 
 
 if __name__ == "__main__":

@@ -1811,6 +1811,222 @@ class JudgePersonaTests(unittest.TestCase):
         self.assertEqual("我是橘雪莉。", sp)
 
 
+# _make_plugin / _FakeEmotionStar / _attach_emotion 定义在 test_emotion_bridge.py
+from tests.test_emotion_bridge import (  # type: ignore[attr-defined]
+    _FakeEmotionStar,
+    _attach_emotion,
+    _make_plugin,
+)
+
+
+class TriggeredReplyHintTests(unittest.TestCase):
+    """v0.8.14+/v0.8.15+：on_llm_request 触发提示模板化测试。
+
+    覆盖 _default_triggered_reply_hint()、模板注入、{bot_energy} 变量替换、
+    ESM 缺失/异常/inject 关闭等场景。
+    """
+
+    def setUp(self) -> None:
+        self.plugin = _make_plugin()
+        self.plugin.groups["group-1"] = GroupContext()
+
+    def _make_event(self, **extras) -> _Event:
+        defaults = {
+            "social_context_triggered": True,
+            "social_context_reply_style": "short",
+            "social_context_reply_intent": "join_topic",
+        }
+        defaults.update(extras)
+        return _Event(extras=defaults)
+
+    def _make_request(self) -> object:
+        class _R:
+            system_prompt = "base"
+            extra_user_content_parts: list = []
+        return _R()
+
+    # ---- 默认模板 ----
+
+    def test_default_triggered_reply_hint_has_required_placeholders(self) -> None:
+        """默认模板必须包含 {style} {intent} {bot_energy} 三个占位符。"""
+        tmpl = self.plugin._default_triggered_reply_hint()
+        for ph in ("{style}", "{intent}", "{bot_energy}"):
+            self.assertIn(ph, tmpl, f"默认模板缺占位符 {ph}")
+
+    def test_default_triggered_reply_hint_mentions_energy(self) -> None:
+        """默认模板应包含精力提示语义（"精力"/"慵懒"等关键词）。"""
+        tmpl = self.plugin._default_triggered_reply_hint()
+        self.assertIn("精力", tmpl)
+        self.assertIn("慵懒", tmpl)  # 低精力慵懒提示
+
+    # ---- 注入触发 ----
+
+    def test_on_llm_request_injects_default_hint_when_triggered(self) -> None:
+        """触发后走默认模板，{style}/{intent} 正确替换。"""
+        event = self._make_event()
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        self.assertEqual(1, len(request.extra_user_content_parts))
+        part = request.extra_user_content_parts[0]
+        self.assertIn("建议回复风格：short", part.text)
+        self.assertIn("回复意图：join_topic", part.text)
+
+    def test_on_llm_request_injects_bot_energy_in_default_template(self) -> None:
+        """触发后默认模板应包含 {bot_energy} 占位符替换后的值。"""
+        event = self._make_event()
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        part = request.extra_user_content_parts[0]
+        # ESM 未挂载 → _get_bot_energy 返 None → bot_energy 默认 "1.00"
+        self.assertIn("Bot 当前精力：1.00", part.text)
+        self.assertTrue(getattr(part, "_no_save", False))
+
+    def test_on_llm_request_no_hint_when_not_triggered(self) -> None:
+        """extras 没有 social_context_triggered → 不注入 hint。"""
+        event = _Event(extras={})
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        self.assertEqual(0, len(request.extra_user_content_parts))
+
+    def test_on_llm_request_no_hint_when_triggered_false(self) -> None:
+        """extras 里 triggered 显式为 False → 不注入。"""
+        event = _Event(extras={"social_context_triggered": False})
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        self.assertEqual(0, len(request.extra_user_content_parts))
+
+    # ---- {bot_energy} 来源 ----
+
+    def test_bot_energy_from_esm_substituted_into_hint(self) -> None:
+        """挂载 fake ESM，{bot_energy} 应取自 ESM.get_bot_energy。"""
+        # 复用 test_emotion_bridge 的 _FakeEmotionStar
+        from tests.test_emotion_bridge import _FakeEmotionStar, _attach_emotion
+
+        star = _FakeEmotionStar(bot_energy=0.42)
+        _attach_emotion(self.plugin, star)
+
+        event = self._make_event()
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        part = request.extra_user_content_parts[0]
+        self.assertIn("Bot 当前精力：0.42", part.text)
+        # ESM.get_bot_energy 被调过（透传 scope）
+        self.assertGreater(len(star.get_bot_energy_calls), 0)
+
+    def test_bot_energy_falls_back_to_one_when_esm_missing(self) -> None:
+        """ESM 整体缺失 → {bot_energy} 默认 1.00。"""
+        # _make_plugin 时 context.get_registered_star 不存在 → _get_bot_energy 返 None
+        event = self._make_event()
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        part = request.extra_user_content_parts[0]
+        self.assertIn("Bot 当前精力：1.00", part.text)
+
+    def test_bot_energy_falls_back_to_one_when_esm_raises(self) -> None:
+        """ESM.get_bot_energy 抛异常 → {bot_energy} 默认 1.00（不传播异常）。"""
+        from tests.test_emotion_bridge import _FakeEmotionStar, _attach_emotion
+
+        star = _FakeEmotionStar(raise_on_get_bot_energy=True)
+        _attach_emotion(self.plugin, star)
+
+        event = self._make_event()
+        request = self._make_request()
+
+        # 不应抛异常
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        part = request.extra_user_content_parts[0]
+        self.assertIn("Bot 当前精力：1.00", part.text)
+
+    def test_bot_energy_falls_back_when_inject_disabled(self) -> None:
+        """judge_energy_inject_enabled=false → {bot_energy} 不查 ESM，直接 1.00。"""
+        from tests.test_emotion_bridge import _FakeEmotionStar, _attach_emotion
+
+        star = _FakeEmotionStar(bot_energy=0.10)  # 即便 ESM 有低能量也不该查
+        _attach_emotion(self.plugin, star)
+        self.plugin.config["judge_energy_inject_enabled"] = False
+
+        event = self._make_event()
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        part = request.extra_user_content_parts[0]
+        self.assertIn("Bot 当前精力：1.00", part.text)
+        # inject 关时不应查 ESM（短路优化）
+        self.assertEqual(len(star.get_bot_energy_calls), 0)
+
+    # ---- 自定义模板 ----
+
+    def test_custom_template_used_when_configured(self) -> None:
+        """triggered_reply_hint_template 配置非空 → 使用用户模板。"""
+        custom = "[自定义提示] 风格={style}, 意图={intent}, 精力={bot_energy}"
+        self.plugin.config["triggered_reply_hint_template"] = custom
+
+        event = self._make_event()
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        part = request.extra_user_content_parts[0]
+        self.assertEqual(
+            "[自定义提示] 风格=short, 意图=join_topic, 精力=1.00",
+            part.text,
+        )
+
+    def test_custom_template_with_mark_as_temp(self) -> None:
+        """自定义模板注入的 TextPart 也应 mark_as_temp。"""
+        self.plugin.config["triggered_reply_hint_template"] = "{style}|{intent}|{bot_energy}"
+        event = self._make_event()
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        part = request.extra_user_content_parts[0]
+        self.assertTrue(getattr(part, "_no_save", False))
+
+    def test_format_error_falls_back_to_default_template(self) -> None:
+        """模板 format 异常时 → 走默认模板（_format_template 的 fallback）。
+
+        故意给一个非法 format 字符串（`{` 不闭合），_format_template 会捕获
+        FormatError 并回退到 self._default_triggered_reply_hint()，所以结果里
+        应该看到默认模板的特征字串「本次回复由群聊状态判断主动触发」，而不是
+        用户的坏模板片段。
+        """
+        self.plugin.config["triggered_reply_hint_template"] = "{style} {unclosed"
+        event = self._make_event()
+        request = self._make_request()
+
+        asyncio.run(self.plugin.on_llm_request(event, request))  # type: ignore[arg-type]
+
+        part = request.extra_user_content_parts[0]
+        # fallback 后用默认模板，所以包含默认模板的特征字串
+        self.assertIn("本次回复由群聊状态判断主动触发", part.text)
+        # 用户坏模板被完全丢弃
+        self.assertNotIn("{unclosed", part.text)
+
+    # ---- _default_judge_decision_prompt 也含精力块（v0.8.14 回归） ----
+
+    def test_default_judge_decision_prompt_has_bot_energy_block(self) -> None:
+        """回归：v0.8.14+ judge 默认 prompt 含 {bot_energy} 占位符 + 精力语义。"""
+        tmpl = self.plugin._default_judge_decision_prompt()
+        self.assertIn("{bot_energy}", tmpl)
+        self.assertIn("Bot 当前状态", tmpl)
+        self.assertIn("精力低于 0.2", tmpl)  # 疲劳阈值建议
+
+
 class ReplyStepTests(unittest.TestCase):
     """output_step.reply 智能引用纯函数测试。"""
 

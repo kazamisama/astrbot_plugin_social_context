@@ -722,7 +722,10 @@ class SocialContextPlugin(
 
         # v0.8.0+：把用户消息喂给 emotion_state_machine 观察（bot 自己的消息不喂，避免自反馈）
         if not is_bot:
-            emo_scope = self._emotion_scope(event)
+            # v0.8.16+：_emotion_scope 改 async，await 后再喂。
+            # 否则 ESM v0.10.3+ 的 get_scope coroutine 会被 str() 字符串化为
+            # "<coroutine object ...>"，observe_text 写到错 scope，数据流静默全停。
+            emo_scope = await self._emotion_scope(event)
             self._feed_emotion_observation(
                 scope=emo_scope,
                 text=content,
@@ -1074,7 +1077,7 @@ class SocialContextPlugin(
         if not group_id and self._cfg_bool("only_group", True):
             return
 
-        scope = self._scope_id(event)
+        scope = await self._emotion_scope(event)
         group = self._get_group(scope)
         now = time.time()
 
@@ -1151,7 +1154,7 @@ class SocialContextPlugin(
         group_id = event.get_group_id()
         if not group_id:
             return
-        scope = self._scope_id(event)
+        scope = await self._emotion_scope(event)
         group = self._get_group(scope)
         now = time.time()
         # 先 prune 一次，避免把窗口外的"插嘴"算进去
@@ -1193,7 +1196,7 @@ class SocialContextPlugin(
         if "judge_last" in message:
             await self._send_judge_last(event)
             return
-        scope = self._scope_id(event)
+        scope = await self._emotion_scope(event)
         group = self._get_group(scope)
         now = time.time()
         group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
@@ -1224,7 +1227,7 @@ class SocialContextPlugin(
         await self._send_judge_last(event)
 
     async def _send_judge_last(self, event: AstrMessageEvent) -> None:
-        scope = self._scope_id(event)
+        scope = await self._emotion_scope(event)
         group = self._get_group(scope)
         data = group.last_judge_result or {}
         if not data:
@@ -1284,7 +1287,7 @@ class SocialContextPlugin(
     @filter.command("social_context_reset")
     async def social_context_reset(self, event: AstrMessageEvent):
         """重置当前会话的 social context 状态。"""
-        scope = self._scope_id(event)
+        scope = await self._emotion_scope(event)
         self.groups.pop(scope, None)
         self._save_if_needed(force=True)
         event.set_result(event.plain_result("✅ 当前会话的 Social Context 已重置"))

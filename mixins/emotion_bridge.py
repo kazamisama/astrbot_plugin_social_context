@@ -71,20 +71,36 @@ class EmotionBridgeMixin:
             return None
         return star_instance
 
-    def _emotion_scope(self, event: object) -> str:
+    async def _emotion_scope(self, event: object) -> str:
         """计算与 emotion 插件对齐的 scope。
 
         优先用 emotion 自己的 get_scope(event) 以保证绝对一致（emotion
-        内部已经做了 group_id → unified_msg_origin → _private 降级）。
-        降级到本地 _scope_id(event)，保证 emotion 插件不可用时
-        social_context 自己的 scope 计算不受影响。
+        内部已经做了 group_id → unified_msg_origin → _private 降级 +
+        v0.10.2+ webchat 折叠 + v0.9.48+ persona stamp）。降级到本地
+        _scope_id(event)，保证 emotion 插件不可用时 social_context 自己的
+        scope 计算不受影响。
+
+        v0.8.16+ 改为 async：ESM v0.10.3 把 get_scope 改 async 后，
+        原同步实现里 ``str(getter(event))`` 拿到的是 coroutine 对象
+        —— ``str(coroutine)`` 字符串化后变成 ``"<coroutine object ...>"``，
+        喂给 observe_text 的 scope 永远是脏数据，emotion 数据流静默全停。
+        现在 await 拿到真实字符串。
+
+        调用方必须 await：
+            scope = await self._emotion_scope(event)
         """
         emo = self._get_emotion_plugin()
         if emo is not None:
             try:
                 getter = getattr(emo, "get_scope", None)
                 if getter is not None:
-                    return str(getter(event))
+                    # ESM v0.10.3+ get_scope 是 async，必须 await。
+                    # 老版本 ESM（同步 get_scope）也兼容——asyncio.run 之类
+                    # 的代码不会走到这里（getter 直接返回 str）。
+                    result = getter(event)
+                    if hasattr(result, "__await__"):
+                        result = await result
+                    return str(result)
             except Exception:
                 pass
         return self._scope_id(event)

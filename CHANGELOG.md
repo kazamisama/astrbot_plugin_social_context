@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.8.16 - 2026-07-03
+
+### Fixed
+
+- **`_emotion_scope` 改 async + main.py 4 处统一对齐**（§4 P0 修复）：
+  ESM v0.10.3（commit `ff6c16c`）把 `get_scope` 改 async 后，social_context 的
+  `mixins/emotion_bridge.py:_emotion_scope` 内部 `str(getter(event))` 拿到的是
+  coroutine 对象——`str(coroutine)` 字符串化后变成 `"<coroutine object ...>"`，
+  喂给 `observe_text` 的 scope 永远是脏数据，emotion 数据流**静默全停，无任何
+  报错日志**。
+  - 修复：`_emotion_scope` 改 `async def`，内部 `await getter(event)`
+  - 兼容老版本 ESM（同步 `get_scope`）：`if hasattr(result, "__await__"): await`，
+    同步版本直接走 `str(result)`，两条路径都覆盖
+  - `main.py` 5 处统一 `await self._emotion_scope(event)`：
+    `:725`（on_group_message 喂 emotion）、`:1077`（on_llm_request）、
+    `:1154`（插话注入 scope）、`:1196`（`social_context_status` 命令）、
+    `:1227`（`_send_judge_last`）、`:1287`（`social_context_reset`）
+  - `main.py:1444`（`_build_prompt_variables`，sync 函数）保留本地 `_scope_id`——
+    该 scope 仅用于 prompt 模板的 `{scope}` 占位符展示，不参与 emotion 写入，
+    改成 async 会牵动 `build_judge_prompt_block` / `build_reply_prompt_block`
+    整条 sync 链路，**风险/收益不匹配**
+- **scope 对齐 ESM**（§4 风险 1）：v0.10.2+ 启用 `webchat_shared_scope=True`
+  或 `persona_isolation_enabled=True` 时，social_context 现在用 ESM 的
+  `_scope_id(event)` 算 scope，与 emotion 内部完全一致——之前 4 处用本地
+  `_scope_id(event)` 会算成 `webchat:FriendMessage:chiriu`，ESM 内部算成
+  `webchat:橘雪莉`，状态分裂
+
+### Added
+
+- **新测试覆盖**（`tests/test_emotion_bridge.py`）：
+  - `test_emotion_scope_awaits_async_get_scope`：mock async get_scope 返回
+    `webchat:橘雪莉`，验证 social_context 拿到真实字符串而不是
+    `"<coroutine object ...>"`（**核心回归**）
+  - `test_emotion_scope_keeps_legacy_sync_get_scope_compat`：兼容老版本 ESM
+    （同步 get_scope），不能因为本次改动破坏降级路径
+
+### Internal
+
+- `_FakeEmotionStar.get_scope` 改 async，匹配生产 ESM v0.10.3+ 行为
+- 3 个原有 scope 测试改用 `asyncio.run` 驱动
+- 37 → 39 → 175 全套（新增 2 条，零失败）
+
 ## v0.8.15 - 2026-07-01
 
 - **重构：4 个 prompt 模板归位到对应功能框**——v0.8.15 起删除顶层 `prompt_templates` 框，按功能归类：

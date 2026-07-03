@@ -94,7 +94,9 @@ class _FakeEmotionStar:
         self.text_part_calls: list[dict] = []
         self.get_bot_energy_calls: list[dict] = []
 
-    def get_scope(self, event: object) -> str:
+    async def get_scope(self, event: object) -> str:
+        # v0.8.16+：ESM v0.10.3 把 get_scope 改 async。
+        # fake 同步实现 → 异步实现，以匹配生产代码。
         return self._scope_for_event
 
     def observe_text(self, *, scope, text, user_id, mentioned):  # noqa: ANN001
@@ -313,25 +315,36 @@ class EmotionBridgeTests(unittest.TestCase):
         )
 
     # ---- scope 路径 ----
+    # v0.8.16+：_emotion_scope 改 async；测试通过 asyncio.run 驱动。
 
     def test_emotion_scope_prefers_emotion_get_scope(self) -> None:
+        import asyncio
+
         star = _FakeEmotionStar(scope_for_event="from-emotion")
         _attach_emotion(self.plugin, star)
         event = SimpleNamespace()
-        self.assertEqual(self.plugin._emotion_scope(event), "from-emotion")
+        self.assertEqual(
+            asyncio.run(self.plugin._emotion_scope(event)), "from-emotion"
+        )
 
     def test_emotion_scope_falls_back_to_local_when_plugin_missing(self) -> None:
         # 无 emotion 插件时，走主类 _scope_id 的 group_id → origin → _private 降级
         # 这里 _Event 没有 unified_msg_origin 属性，回退 _scope_id(event) 走 hasattr try/except
         # 用 SimpleNamespace 模拟没有 group_id 的私聊
+        import asyncio
+
         event = SimpleNamespace(
             get_group_id=lambda: "",
             unified_msg_origin="private:x",
         )
         # 没有 get_registered_star → 走本地降级
-        self.assertEqual(self.plugin._emotion_scope(event), "private:x")
+        self.assertEqual(
+            asyncio.run(self.plugin._emotion_scope(event)), "private:x"
+        )
 
     def test_emotion_scope_falls_back_to_local_when_get_scope_raises(self) -> None:
+        import asyncio
+
         class _Boom(SimpleNamespace):
             def get_scope(self, _):
                 raise RuntimeError("boom")
@@ -342,7 +355,61 @@ class EmotionBridgeTests(unittest.TestCase):
             unified_msg_origin="origin",
         )
         # _scope_id 本地版本优先 group_id
-        self.assertEqual(self.plugin._emotion_scope(event), "g-7")
+        self.assertEqual(asyncio.run(self.plugin._emotion_scope(event)), "g-7")
+
+    def test_emotion_scope_awaits_async_get_scope(self) -> None:
+        """v0.8.16+ 关键回归：ESM v0.10.3 的 get_scope 是 async。
+
+        之前 str(getter(event)) 会拿到 "<coroutine object ...>"。
+        现在 await 后拿到真实 scope 字符串。
+        """
+        import asyncio
+
+        class _AsyncEmotionStar(SimpleNamespace):
+            async def get_scope(self, event):
+                # 模拟 ESM v0.10.3 的 webchat 折叠行为
+                return "webchat:橘雪莉"
+
+            def observe_text(self, **_):  # 满足 _get_emotion_plugin 的检查
+                return None
+
+        self.plugin.context.get_registered_star = (  # type: ignore[attr-defined]
+            lambda _name: _AsyncEmotionStar()
+        )
+        event = SimpleNamespace(
+            get_group_id=lambda: "",
+            unified_msg_origin="webchat:FriendMessage:chiriu",
+        )
+        scope = asyncio.run(self.plugin._emotion_scope(event))
+        # 关键：拿到的是真实字符串，不是 coroutine 的 str() 化
+        self.assertEqual(scope, "webchat:橘雪莉")
+        self.assertNotIn("coroutine", scope)
+        self.assertNotIn("<", scope)
+
+    def test_emotion_scope_keeps_legacy_sync_get_scope_compat(self) -> None:
+        """老版本 ESM（同步 get_scope）也要能工作。
+
+        v0.10.2 之前 ESM 的 get_scope 是同步方法；v0.8.16+ 的
+        _emotion_scope 改动不能破坏这种降级兼容。
+        """
+        import asyncio
+
+        class _SyncEmotionStar(SimpleNamespace):
+            def get_scope(self, event):
+                return "sync-scope"
+
+            def observe_text(self, **_):
+                return None
+
+        self.plugin.context.get_registered_star = (  # type: ignore[attr-defined]
+            lambda _name: _SyncEmotionStar()
+        )
+        event = SimpleNamespace(
+            get_group_id=lambda: "g-1",
+            unified_msg_origin="origin",
+        )
+        scope = asyncio.run(self.plugin._emotion_scope(event))
+        self.assertEqual(scope, "sync-scope")
 
     # ---- MRO / 常量 ----
 

@@ -411,6 +411,105 @@ class EmotionBridgeTests(unittest.TestCase):
         scope = asyncio.run(self.plugin._emotion_scope(event))
         self.assertEqual(scope, "sync-scope")
 
+    # ---- v0.8.17+ 集成：webchat_shared_scope 路径 ----
+    # §4.4 P1：验证 social_context 喂入 ESM 的 scope 与 ESM 内部
+    # _scope_id 算出的 scope 完全一致——避免 v0.10.2+ 启用
+    # webchat_shared_scope=True 后状态分裂。
+
+    def test_observe_text_scope_matches_esm_webchat_collapse(self) -> None:
+        """集成测试：webchat 私聊 + ESM 启用 webchat_shared_scope 时，
+        social_context 喂入 observe_text 的 scope 与 ESM 内部一致。
+
+        模拟 ESM v0.10.2+：webchat 私聊折叠为 webchat:<persona>。
+        social_context 的 _emotion_scope（v0.8.16+ async）拿到
+        ESM.get_scope 返回的 webchat:橘雪莉，作为 observe_text 的 scope。
+        """
+        import asyncio
+
+        class _WebchatEmotionStar:
+            def __init__(self) -> None:
+                self.observe_calls: list[dict] = []
+
+            async def get_scope(self, event):
+                umo = getattr(event, "unified_msg_origin", "") or ""
+                if umo.startswith("webchat:"):
+                    return "webchat:橘雪莉"
+                return "private:x"
+
+            def observe_text(self, **kwargs):  # noqa: ANN003
+                self.observe_calls.append(kwargs)
+                return SimpleNamespace(label="calm")
+
+        star = _WebchatEmotionStar()
+        # 关键：get_registered_star 必须返回**同一个**实例——
+        # _get_emotion_plugin + _feed_emotion_observation 各调一次，
+        # 不同实例会导致 observe_calls 落不到同一处。
+        self.plugin.context.get_registered_star = (  # type: ignore[attr-defined]
+            lambda _name: star
+        )
+
+        event = SimpleNamespace(
+            get_group_id=lambda: "",
+            unified_msg_origin="webchat:FriendMessage:chiriu",
+        )
+        scope = asyncio.run(self.plugin._emotion_scope(event))
+        self.assertEqual(scope, "webchat:橘雪莉")
+        self.plugin._feed_emotion_observation(
+            scope=scope, text="hi bot", user_id="chiriu", mentioned=False
+        )
+        self.assertEqual(len(star.observe_calls), 1)
+        self.assertEqual(star.observe_calls[0]["scope"], "webchat:橘雪莉")
+        # 关键：不是 social_context 自己的 webchat:FriendMessage:chiriu
+        self.assertNotEqual(
+            star.observe_calls[0]["scope"], "webchat:FriendMessage:chiriu"
+        )
+
+    def test_observe_text_scope_matches_esm_group_persona_stamp(self) -> None:
+        """集成测试：QQ 群 + ESM 启用 persona_isolation_enabled 时，
+        social_context 喂入 observe_text 的 scope 含 persona stamp。
+        """
+        import asyncio
+
+        class _GroupEmotionStar:
+            def __init__(self) -> None:
+                self.observe_calls: list[dict] = []
+
+            async def get_scope(self, event):
+                gid = event.get_group_id() or ""
+                if gid.startswith("QQ-"):
+                    return f"{gid}:橘雪莉"
+                return "unknown"
+
+            def observe_text(self, **kwargs):  # noqa: ANN003
+                self.observe_calls.append(kwargs)
+                return SimpleNamespace(label="calm")
+
+        star = _GroupEmotionStar()
+        self.plugin.context.get_registered_star = (  # type: ignore[attr-defined]
+            lambda _name: star
+        )
+
+        event = SimpleNamespace(
+            get_group_id=lambda: "QQ-12345",
+            unified_msg_origin="QQ-12345",
+        )
+        scope = asyncio.run(self.plugin._emotion_scope(event))
+        self.assertEqual(scope, "QQ-12345:橘雪莉")
+        self.plugin._feed_emotion_observation(
+            scope=scope, text="hi", user_id="u-1", mentioned=False
+        )
+        self.assertEqual(star.observe_calls[0]["scope"], "QQ-12345:橘雪莉")
+        # 关键：不是 social_context 自己的 QQ-12345
+        self.assertNotEqual(star.observe_calls[0]["scope"], "QQ-12345")
+
+    def test_only_group_defaults_to_false(self) -> None:
+        """v0.8.17+：only_group 默认 false，私聊也注入。
+
+        防回归：未来有人把 default 改回 true 时这条测试会红。
+        """
+        # _make_plugin 用 _Cfg（无 only_group 设置）→ schema 默认 false
+        self.assertFalse(self.plugin._cfg_bool("only_group", False))
+
     # ---- MRO / 常量 ----
 
     def test_emotion_bridge_mixin_in_mro(self) -> None:

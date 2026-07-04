@@ -12,9 +12,9 @@
             },
             "only_group": {
                 "description": "仅群聊注入",
-                "hint": "开启后私聊不会注入 social context",
+                "hint": "v0.8.17+ 默认关闭：私聊（webchat / OneBot 好友）也会注入 social context 块。开启后仅群聊注入——私聊跳过整段 on_llm_request 注入逻辑。注意 on_group_message 钩子本身只接 GROUP_MESSAGE 事件（不受此开关影响），私聊只会走到 on_llm_request 注入空块（群 state 字典为空）。",
                 "type": "bool",
-                "default": true
+                "default": false
             }
         }
     },

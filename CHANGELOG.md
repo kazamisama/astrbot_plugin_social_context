@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.8.17 - 2026-07-03
+
+### Changed
+
+- **`only_group` 默认 `true` → `false`**：v0.8.17+ 起，私聊（webchat / OneBot
+  好友）默认也会触发 `on_llm_request` 注入 social context 块。开启后
+  （手动改回 true）仅群聊注入。注意 `on_group_message` 钩子本身只接
+  `GROUP_MESSAGE` 事件（不受此开关影响），私聊只会走到 `on_llm_request`
+  注入路径（群 state 字典为空，注入的是空块）。
+- 配合 v0.8.16+ 的 `_emotion_scope` async 化：私聊下 scope 走 ESM 的
+  `get_scope`，webchat 私聊折叠为 `webchat:<persona>`（与 ESM 内部
+  `_scope_id` 完全一致），情绪块能真正写到 ESM 的有效 scope。
+
+### Added
+
+- **集成测试覆盖 webchat_shared_scope 路径**（todo §4.4 P1）：
+  - `test_observe_text_scope_matches_esm_webchat_collapse`：mock ESM
+    `get_scope` 返回 `webchat:橘雪莉`，验证 `_feed_emotion_observation`
+    喂入 `observe_text` 的 scope 是 `webchat:橘雪莉`（**不是** 自己的
+    `webchat:FriendMessage:chiriu`）。
+  - `test_observe_text_scope_matches_esm_group_persona_stamp`：QQ 群 +
+    persona 隔离场景，验证 scope 含 persona stamp（`QQ-12345:橘雪莉`）。
+  - `test_only_group_defaults_to_false`：防回归——未来有人把 default
+    改回 true 时这条测试会红。
+- 测试：175 → 178（+3 条）
+
 ## v0.8.16 - 2026-07-03
 
 ### Fixed

@@ -1074,7 +1074,11 @@ class SocialContextPlugin(
             return
 
         group_id = event.get_group_id()
-        if not group_id and self._cfg_bool("only_group", True):
+        # v0.8.17+：only_group 默认 false，私聊也注入 social context 块。
+        # 私聊没 group_id，scope 走 webchat 折叠路径，喂 ESM 的 scope 与
+        # ESM 内部 _scope_id 完全一致（v0.8.16+ _emotion_scope 改 async 后
+        # 才有这个能力）。
+        if not group_id and self._cfg_bool("only_group", False):
             return
 
         scope = await self._emotion_scope(event)

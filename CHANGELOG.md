@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.8.18 - 2026-08-07
+
+### Fixed
+
+- **AstrBot 4.x `get_registered_star` 返回 `StarMetadata` 导致 emotion 桥接失效**：
+  在 AstrBot 4.x 中 `context.get_registered_star` 返回的是 `StarMetadata` 元数据对象，
+  真实插件实例在 `star_cls` 字段。旧代码直接把 `StarMetadata` 当作实例检查 `observe_text`，
+  日志反复出现 `[social_context] emotion_state_machine 实例缺少 observe_text，跳过桥接`，
+  导致 emotion 状态流静默全停。
+  - 修复：`mixins/emotion_bridge.py:_get_emotion_plugin` 先取 `star.star_cls`，
+    兼容旧契约直接返回实例本身的情况。
+  - 新增测试覆盖 `StarMetadata` 契约：
+    `test_get_registered_star_metadata_returns_star_cls_instance`、
+    `test_get_registered_star_metadata_without_instance_is_silent`。
+- 测试：178 → 180（+2 条）
+
+
 ## v0.8.17 - 2026-07-03
 
 ### Changed

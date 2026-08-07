@@ -194,6 +194,22 @@ class EmotionBridgeTests(unittest.TestCase):
         # 走降级：build_emotion_block 应该返回空串
         self.assertEqual(self.plugin._build_emotion_block("g", "u"), "")
 
+    # ---- AstrBot 4.x 真实契约：get_registered_star 返回 StarMetadata ----
+
+    def test_get_registered_star_metadata_returns_star_cls_instance(self) -> None:
+        # AstrBot 4.x：get_registered_star 返回 StarMetadata，插件实例在
+        # star_cls 字段；_get_emotion_plugin 必须取 star_cls 而不是 metadata 本身。
+        star = _FakeEmotionStar()
+        metadata = SimpleNamespace(star_cls=star)
+        self.plugin.context.get_registered_star = lambda _name: metadata  # type: ignore[attr-defined]
+        self.assertIs(self.plugin._get_emotion_plugin(), star)
+
+    def test_get_registered_star_metadata_without_instance_is_silent(self) -> None:
+        # 插件实例未激活时 StarMetadata.star_cls 为 None → 视作不可用，静默降级。
+        metadata = SimpleNamespace(star_cls=None)
+        self.plugin.context.get_registered_star = lambda _name: metadata  # type: ignore[attr-defined]
+        self.assertIsNone(self.plugin._get_emotion_plugin())
+
     # ---- 接入点 1：observe ----
 
     def test_observe_calls_emotion_with_args(self) -> None:

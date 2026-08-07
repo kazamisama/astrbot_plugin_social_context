@@ -58,12 +58,17 @@ class EmotionBridgeMixin:
             get_star = getattr(self.context, "get_registered_star", None)
             if get_star is None:
                 return None
-            star_instance = get_star(EMOTION_STAR_NAME)
+            star = get_star(EMOTION_STAR_NAME)
         except Exception as exc:
             logger.debug(f"[social_context] emotion_state_machine 不可用: {exc}")
             return None
-        if star_instance is None:
+        if star is None:
             return None
+        # AstrBot 4.x：get_registered_star 返回 StarMetadata，实例在 star_cls
+        # 字段；旧契约/测试 mock 直接返回实例本身，两者都兼容。
+        star_instance = getattr(star, "star_cls", None)
+        if star_instance is None:
+            star_instance = star
         if not hasattr(star_instance, "observe_text"):
             logger.debug(
                 "[social_context] emotion_state_machine 实例缺少 observe_text，跳过桥接。"

@@ -682,7 +682,10 @@ class SocialContextPlugin(
         if not content:
             return
 
-        group = self._get_group(group_id)
+        # v0.8.16+ 补全：写入路径与读取路径统一用 ESM scope（含 persona stamp）。
+        # 否则 on_llm_request / judge 在 persona_isolation 开启时读到空状态。
+        scope = await self._emotion_scope(event)
+        group = self._get_group(scope)
         user = self._get_user(sender_id)
 
         is_bot = sender_id == str(event.get_self_id())
@@ -722,12 +725,12 @@ class SocialContextPlugin(
 
         # v0.8.0+：把用户消息喂给 emotion_state_machine 观察（bot 自己的消息不喂，避免自反馈）
         if not is_bot:
-            # v0.8.16+：_emotion_scope 改 async，await 后再喂。
+            # v0.8.16+：scope 必须来自 await self._emotion_scope(event)（async），
             # 否则 ESM v0.10.3+ 的 get_scope coroutine 会被 str() 字符串化为
-            # "<coroutine object ...>"，observe_text 写到错 scope，数据流静默全停。
-            emo_scope = await self._emotion_scope(event)
+            # "<coroutine object ...>"，observe_text 写到错 scope。上面已算好，
+            # 直接复用，避免对同一事件重复解析 persona。
             self._feed_emotion_observation(
-                scope=emo_scope,
+                scope=scope,
                 text=content,
                 user_id=sender_id,
                 mentioned=event.is_at_or_wake_command,
@@ -735,12 +738,12 @@ class SocialContextPlugin(
 
         # v0.6.1+：D 方案触发点——on-message 后看是否要压 tier2 / 启动 tier3 后台
         self._ensure_tier3_loop()
-        self._maybe_schedule_tier2_compress(group_id)
+        self._maybe_schedule_tier2_compress(scope)
         # v0.6.3+：懒启动过期摘要清理循环（独立于 compress 循环）
         self._ensure_stale_prune_loop()
 
         if not is_bot:
-            await self._maybe_trigger_autonomous_reply(event, group_id)
+            await self._maybe_trigger_autonomous_reply(event, scope)
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -770,7 +773,9 @@ class SocialContextPlugin(
             return
 
         now = time.time()
-        group = self._get_group(group_id)
+        # 与 on_group_message / on_llm_request 保持同一 scope 键（含 persona stamp）
+        scope = await self._emotion_scope(event)
+        group = self._get_group(scope)
         group.pokes.append(PokeRecord(sender_id=sender_id, target_id=target_id, timestamp=now))
         group.total_pokes_today += 1
 
@@ -883,6 +888,7 @@ class SocialContextPlugin(
                     emotion_part = to_text_part(scope, str(event.get_sender_id()))
             except Exception as exc:
                 logger.debug(f"[social_context] to_text_part 失败: {exc}")
+        extra_parts: list[Any] = []
         if emotion_part is not None and emotion_part.text:
             extra_parts.append(emotion_part)
         else:
@@ -942,6 +948,7 @@ class SocialContextPlugin(
                     image_urls=[],
                     system_prompt=persona_system_prompt or "",
                     extra_user_content_parts=[
+                        *extra_parts,
                         TextPart(
                             text=prompt + retry_note, type="text"
                         ).mark_as_temp()

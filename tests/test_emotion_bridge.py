@@ -518,6 +518,70 @@ class EmotionBridgeTests(unittest.TestCase):
         # 关键：不是 social_context 自己的 QQ-12345
         self.assertNotEqual(star.observe_calls[0]["scope"], "QQ-12345")
 
+    def test_on_group_message_writes_state_under_esm_persona_scope(self) -> None:
+        """v0.8.16 补全：写入路径必须和读取路径共用 ESM scope。
+
+        生产里 ESM 开启 persona_isolation 后 scope 是 ``QQ群号:人格``，
+        on_group_message 若仍按裸 group_id 写，on_llm_request / judge
+        会在带 stamp 的键上读到空状态（状态分裂）。
+        """
+        import asyncio
+
+        class _PersonaEmotionStar(_FakeEmotionStar):
+            def __init__(self) -> None:
+                super().__init__(scope_for_event="QQ-20001:橘雪莉")
+
+        star = _PersonaEmotionStar()
+        self.plugin.context.get_registered_star = lambda _name: star  # type: ignore[attr-defined]
+        self.plugin._last_save_time = 0.0
+        self.plugin._compress_tasks = set()
+        self.plugin._tier3_task = None
+        self.plugin._stale_prune_task = None
+        self.plugin._compress_warn_last = {}
+        self.plugin._member_cache = {}
+        self.plugin.config["persist_enabled"] = False
+        self.plugin.config["judge_enabled"] = False
+
+        class _GroupEvent:
+            def __init__(self) -> None:
+                self.group_id = "QQ-20001"
+                self.unified_msg_origin = "QQ-20001"
+                self.message_str = "你好"
+                self.message_type = "group"
+                self.is_at_or_wake_command = False
+                self.message_obj = SimpleNamespace(
+                    raw_message={},
+                    message_id="m-1",
+                    message=[],
+                )
+                self.extras = {}
+
+            def get_sender_name(self) -> str:
+                return "tester"
+
+            def get_sender_id(self) -> str:
+                return "10001"
+
+            def get_group_id(self) -> str:
+                return self.group_id
+
+            def get_self_id(self) -> str:
+                return "99999"
+
+            def get_message_type(self) -> str:
+                return self.message_type
+
+            def get_extra(self, key, default=None):
+                return self.extras.get(key, default)
+
+        event = _GroupEvent()
+        asyncio.run(self.plugin.on_group_message(event))  # type: ignore[arg-type]
+
+        self.assertIn("QQ-20001:橘雪莉", self.plugin.groups)
+        persona_group = self.plugin.groups["QQ-20001:橘雪莉"]
+        self.assertEqual(1, len(persona_group.messages))
+        self.assertNotIn("QQ-20001", self.plugin.groups)
+
     def test_only_group_defaults_to_false(self) -> None:
         """v0.8.17+：only_group 默认 false，私聊也注入。
 

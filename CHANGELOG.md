@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.8.19 - 2026-08-11
+
+### Fixed
+
+- **judge 通道 `extra_parts` NameError（v0.8.12 遗留）**：
+  `_judge_should_reply` 在 ESM `to_text_part` 可用时引用了未定义变量
+  `extra_parts`，装了 ESM v0.10.0+ 且开启自主 judge 时 `on_group_message`
+  链路直接抛 `NameError`。修复：显式初始化 `extra_parts`，并把 emotion
+  TextPart 与 decision prompt TextPart 一起写入
+  `extra_user_content_parts`。
+  - 新增测试：
+    `test_judge_call_includes_emotion_text_part_when_esm_available`
+- **群状态 scope 写入/读取分裂（v0.8.16 遗留）**：
+  `on_group_message` / `on_group_poke` 仍用裸 `group_id` 写状态，而
+  `on_llm_request` / judge / 命令在 ESM `persona_isolation_enabled=True`
+  时读带 persona stamp 的 scope，导致 LLM 注入和 judge 读到空状态。
+  修复：写入路径统一走 `await self._emotion_scope(event)`，tier2 压缩与
+  自主回复沿用同一 scope，并复用已算好的 scope 避免重复解析 persona。
+  - 新增测试：
+    `test_on_group_message_writes_state_under_esm_persona_scope`
+- 测试：180 → 182（+2 条）
+
+
 ## v0.8.18 - 2026-08-07
 
 ### Fixed

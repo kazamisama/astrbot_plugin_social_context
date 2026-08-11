@@ -105,7 +105,7 @@
 - 2026-07-01 v0.8.15 模板化 + 归位 commit `3f1ab20` 已 push ✓
 - 2026-07-03 v0.8.16 适配 ESM v0.10.3 async 化已 push ✓
 - 2026-07-03 v0.8.17 only_group 默认 false + 集成测试已 push ✓
-- **当前 main 头：v0.8.17**
+- **当前 main 头：v0.8.19**
 - §3 已定论：观察期无 bug，且当前 design 不需要该重构
 - 精力机制贯穿：judge 决策层（硬门槛 + 软注入）+ 主回复 LLM 语气层（triggered_reply_hint_template）
 - §4 P0 修复（async 对齐 + scope 对齐）已发 v0.8.16，175/0 干净

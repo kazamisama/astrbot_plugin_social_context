@@ -1546,6 +1546,45 @@ class JudgeLlmCallTests(unittest.TestCase):
         # 重试成功 → should_reply=False
         self.assertFalse(result.should_reply)
 
+    def test_judge_call_includes_emotion_text_part_when_esm_available(self) -> None:
+        """v0.8.12+ 回归：ESM.to_text_part 可用时 emotion TextPart 必须与
+        decision prompt 一起进入 extra_user_content_parts，不抛 NameError。"""
+        captured: dict = {}
+
+        class _Resp:
+            completion_text = '{"should_reply": false, "confidence": 0.2, "reasoning": "skip"}'
+
+        class _Prov:
+            async def text_chat(self, **kwargs):
+                captured.update(kwargs)
+                return _Resp()
+
+        class _Ctx:
+            def get_provider_by_id(self, pid):
+                return _Prov()
+
+        class _Emo:
+            def to_text_part(self, scope, user_id):
+                return type("Part", (), {"text": "emotion-state"})()
+
+        self.plugin.config = _Cfg({"judge_provider_id": "ok"})
+        self.plugin.context = _Ctx()
+        self.plugin.context.conversation_manager = _FakeConversationManager(
+            conversation=_FakeConversation(persona_id=None)
+        )
+        self.plugin.context.persona_manager = _FakePersonaManager()
+        self.plugin.groups["group-1"] = GroupContext()
+        self.plugin._get_emotion_plugin = lambda: _Emo()
+
+        result = asyncio.run(self.plugin._judge_should_reply(self._make_event(), "group-1"))
+
+        parts = captured.get("extra_user_content_parts")
+        self.assertIsNotNone(parts)
+        self.assertEqual(2, len(parts))
+        self.assertEqual("emotion-state", parts[0].text)
+        self.assertIn("你是群聊机器人是否应该主动回复的判断模型", parts[1].text)
+        self.assertFalse(result.should_reply)
+
 
 class _FakePersona:
     def __init__(self, system_prompt: str = "") -> None:

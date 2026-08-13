@@ -289,7 +289,7 @@
                 "description": "LLM 单次压缩超时（秒）",
                 "hint": "v0.6.1+。超过此时间视作失败，保留旧摘要。",
                 "type": "float",
-                "default": 10.0
+                "default": 30.0
             }
         }
     },

@@ -1313,6 +1313,20 @@ class SocialContextPlugin(
         group.prune(now, self._cfg_int("window_seconds", 60, 1))
         self._save_if_needed()
 
+    @filter.on_astrbot_loaded()
+    async def _on_astrbot_loaded(self) -> None:
+        """启动后补做 tier3 摘要，并确保后台循环已启动。"""
+        if not self._cfg_bool("enabled", True):
+            return
+        self._ensure_tier3_loop()
+        self._ensure_stale_prune_loop()
+        for gid, group in list(self.groups.items()):
+            if group.history_summary and not group.history_daily_summary:
+                try:
+                    await self._compress_history_tier3(gid)
+                except Exception as exc:
+                    logger.debug(f"[social_context] 启动补做 tier3 失败 [{gid}]: {exc}")
+
     @filter.command("social_context")
     async def social_context_status(self, event: AstrMessageEvent):
         """查看当前会话的 social context 状态。"""

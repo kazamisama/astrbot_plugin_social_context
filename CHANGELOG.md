@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.8.25 - 2026-08-14
+
+### Fixed
+
+- **tier3 摘要长期为空**：
+  tier2 成功后现在会立即触发 tier3 压缩，不再等满 `history_compress_tier3_interval`。
+  插件启动后也会补做一次 tier3，把已有 tier2 摘要提升为日摘要。
+- **压缩超时过短**：
+  `history_compress_timeout` 默认从 10s 提高到 30s，减少 reasoning 模型超时
+  导致的 tier2 失败。
+
+### Changed
+
+- 压缩成功后立即 `force save`，避免启动补做的 tier2/tier3 只存在内存而不落盘。
+
+
 ## v0.8.24 - 2026-08-14
 
 ### Changed

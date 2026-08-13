@@ -183,7 +183,7 @@ class CompressMixin:
             return
         interval = self._cfg_int("history_compress_tier2_interval", 300, 1)
         max_chars = self._cfg_int("history_compress_tier2_max_chars", 200, 50)
-        timeout = self._cfg_float("history_compress_timeout", 10.0, 1.0)
+        timeout = self._cfg_float("history_compress_timeout", 30.0, 1.0)
         now = time.time()
         if (now - group.history_summary_updated) < interval:
             return
@@ -195,6 +195,7 @@ class CompressMixin:
         if not msgs:
             return
         group.history_compress_inflight = True
+        new_summary = None
         try:
             # 先逐条扫一遍注入风险（scan_variables 针对单条 dict，列表需逐项扫）
             safe_msgs = [
@@ -225,11 +226,14 @@ class CompressMixin:
                 group.history_summary = new_summary
                 # 更新 updated 到本次新增消息里最新一条的时间戳
                 group.history_summary_updated = max(m.timestamp for m in msgs)
+                self._save_if_needed(force=True)
             else:
                 # 失败：不更新 updated，下次再试
                 logger.debug("[social_context] tier2 压缩未拿到结果，保留旧摘要")
         finally:
             group.history_compress_inflight = False
+        if new_summary:
+            await self._compress_history_tier3(group_id)
 
     async def _compress_history_tier3(self, group_id: str) -> None:
         """tier3 压缩入口（定时器调用方）。输入是 tier2 摘要 + tier3 窗口内新消息。"""
@@ -242,7 +246,7 @@ class CompressMixin:
             return
         interval = self._cfg_int("history_compress_tier3_interval", 3600, 1)
         max_chars = self._cfg_int("history_compress_tier3_max_chars", 300, 50)
-        timeout = self._cfg_float("history_compress_timeout", 10.0, 1.0)
+        timeout = self._cfg_float("history_compress_timeout", 30.0, 1.0)
         now = time.time()
         if (now - group.history_daily_updated) < interval:
             return
@@ -299,6 +303,7 @@ class CompressMixin:
                     new_summary = new_summary[: max_chars * 2]
                 group.history_daily_summary = new_summary
                 group.history_daily_updated = now
+                self._save_if_needed(force=True)
             else:
                 logger.debug("[social_context] tier3 压缩未拿到结果，保留旧摘要")
         finally:

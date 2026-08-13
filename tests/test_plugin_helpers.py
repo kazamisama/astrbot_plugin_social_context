@@ -899,6 +899,8 @@ class PluginHelperTests(unittest.TestCase):
         g = self.plugin.groups["group-1"]
         self.assertIn("新的压缩摘要", g.history_summary)
         self.assertEqual(g.history_summary_updated, ts_new)  # 最新一条 ts
+        # v0.8.25+：tier2 成功后应立即触发 tier3，生成 history_daily_summary
+        self.assertIn("新的压缩摘要", g.history_daily_summary)
         self.assertFalse(g.history_compress_inflight)
 
     def test_compress_tier3_skips_when_no_input(self) -> None:

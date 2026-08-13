@@ -145,13 +145,13 @@ class PluginHelperTests(unittest.TestCase):
         self.assertEqual(self.plugin._cfg_get("judge_provider_id", ""), "p1")
 
     def test_group_whitelist_filters_events(self) -> None:
-        """v0.8.22+：group_whitelist 非空时，只有白名单群允许处理。"""
+        """v0.8.24+：group_whitelist 为空列表时不生效；有值时只白名单群通过。"""
         self.plugin.config = _Cfg({"group_whitelist": ["g1", 123]})
         self.assertTrue(self.plugin._is_group_allowed(_Event(group_id="g1")))
         self.assertTrue(self.plugin._is_group_allowed(_Event(group_id="123")))
         self.assertFalse(self.plugin._is_group_allowed(_Event(group_id="g2")))
-        self.plugin.config = _Cfg({})
-        self.assertTrue(self.plugin._is_group_allowed(_Event(group_id="g-any")))
+        self.plugin.config = _Cfg({"group_whitelist": []})
+        self.assertFalse(self.plugin._is_group_allowed(_Event(group_id="g-any")))
 
     # ---- v0.8.4：_cfg_float 拒绝 NaN/inf ----
 

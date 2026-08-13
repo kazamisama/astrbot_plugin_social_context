@@ -311,15 +311,18 @@ class SocialContextPlugin(
         except Exception:
             return str(event.get_sender_id())
 
-    def _group_whitelist(self) -> set[str]:
-        raw = self._cfg_get("group_whitelist", [])
+    def _group_whitelist(self) -> set[str] | None:
+        raw = self._cfg_get("group_whitelist", None)
+        if raw is None:
+            # 测试/旧配置没有这个键时，保持“不限制”的兼容行为。
+            return None
         if not isinstance(raw, (list, tuple)):
             return set()
         return {str(item).strip() for item in raw if str(item).strip()}
 
     def _is_group_allowed(self, event: AstrMessageEvent) -> bool:
         whitelist = self._group_whitelist()
-        if not whitelist:
+        if whitelist is None:
             return True
         group_id = self._stringify(self._safe_call(event.get_group_id))
         return group_id in whitelist

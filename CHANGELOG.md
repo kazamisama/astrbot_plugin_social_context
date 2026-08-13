@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.8.20 - 2026-08-13
+
+### Fixed
+
+- **tier2/tier3 历史压缩长期空转**：
+  `GroupContext.messages` 一直按 `window_seconds`（60s）裁剪，而压缩层按
+  `history_tier1_max_age`（180s）/ `history_tier2_max_age`（1800s）去同一个
+  deque 找输入，导致 tier2/tier3 摘要永远无法生成。修复：新增不落盘的
+  `history_messages` 长缓冲，写入时同步追加，按 `history_tier3_max_age` +
+  `history_max_messages` 裁剪；`_get_messages_in_tier` 和
+  `build_judge_prompt_block` 优先读长缓冲，空时回退 `messages`。
+  - 新增配置：`history_max_messages`（默认 2000）
+  - 新增测试：`test_get_messages_in_tier_prefers_history_messages`
+
+- **大群成员查询先截断后过滤漏命中**：
+  `get_group_members_info` 先把完整成员列表截到 `member_truncate_threshold`，
+  再按 `name_hint` 过滤，排在阈值之后的特定成员即使首次拉取也查不到。
+  修复：带 `name_hint` 时先过滤完整结果再截断；缓存路径遇到截断缓存且带
+  `hint` 时改为重新拉全量。
+
+### Changed
+
+- **历史摘要纳入 judge 注入扫描**：`build_judge_prompt_block` 的
+  `_scan_variables` 键补充 `history_summary_tier2` / `history_summary_tier3`，
+  与默认模板的说明一致。
+- **测试：182 → 183（+1 条）**；新增 `tests/__init__.py` 修复本地测试收集时
+  被同名 `tests` 包遮蔽的问题。
+
+
 ## v0.8.19 - 2026-08-11
 
 ### Fixed

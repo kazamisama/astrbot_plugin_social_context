@@ -237,6 +237,12 @@
                 "type": "int",
                 "default": 86400
             },
+            "history_max_messages": {
+                "description": "tier2/tier3 压缩长缓冲最大消息数（v0.8.20+）",
+                "hint": "用于在内存中保留供压缩的历史原文上限，不落盘。",
+                "type": "int",
+                "default": 2000
+            },
             "history_compress_tier2_enabled": {
                 "description": "tier2 压缩总开关",
                 "hint": "v0.6.1+。关闭后 tier2 永远只显示「暂无」，不会调 LLM。需要 judge_provider_id 已配置才有效。",

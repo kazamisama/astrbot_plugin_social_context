@@ -362,7 +362,7 @@ class SocialContextPlugin(
 
         # 情形 3：缓存
         cached = self._member_cache_get(group_id)
-        if cached is not None:
+        if cached is not None and not (hint and cached[1]):
             members_raw, truncated = cached
             members = self._format_members(members_raw)
             if hint:
@@ -385,18 +385,25 @@ class SocialContextPlugin(
                 {"error": "获取群成员信息失败，可能是权限不足或网络问题"}
             )
 
-        truncated = len(raw_members) > truncate_threshold
-        kept = raw_members[:truncate_threshold] if truncated else raw_members
-        self._member_cache_set(group_id, kept, truncated)
-
-        members = self._format_members(kept)
+        formatted_all = self._format_members(raw_members)
+        truncated = len(formatted_all) > truncate_threshold
         if hint:
-            members = self._filter_members(members, hint)
+            members = self._filter_members(formatted_all, hint)
+            cache_payload = formatted_all
+            cache_truncated = False
+        else:
+            cache_payload = formatted_all[:truncate_threshold] if truncated else formatted_all
+            cache_truncated = truncated
+            members = cache_payload
+        self._member_cache_set(group_id, cache_payload, cache_truncated)
+        result_members = (
+            members[:truncate_threshold] if hint and len(members) > truncate_threshold else members
+        )
         return self._members_json(
             {
                 "group_id": group_id,
                 "current_sender": current_sender,
-                "members": members,
+                "members": result_members,
                 "member_count": len(members),
                 "truncated": truncated and not hint,
                 "source": "api",
@@ -577,7 +584,8 @@ class SocialContextPlugin(
             return []
         t1, t2, t3, _ = self._history_tier_bounds()
         out: list[MessageRecord] = []
-        for m in group.messages:
+        source = group.history_messages or group.messages
+        for m in source:
             if m.timestamp <= since_timestamp:
                 continue
             age = now - m.timestamp
@@ -708,6 +716,7 @@ class SocialContextPlugin(
             is_at_all=is_at_all,
         )
         group.messages.append(record)
+        group.history_messages.append(record)
         group.total_messages_today += 1
         if is_bot:
             group.last_bot_reply_time = now
@@ -721,6 +730,12 @@ class SocialContextPlugin(
                 user.role = sender_role
 
         group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
+        history_max = self._cfg_int("history_max_messages", 2000, 1)
+        history_cutoff = now - self._cfg_int("history_tier3_max_age", 86400, 1)
+        while group.history_messages and group.history_messages[0].timestamp < history_cutoff:
+            group.history_messages.popleft()
+        while len(group.history_messages) > history_max:
+            group.history_messages.popleft()
         self._save_if_needed()
 
         # v0.8.0+：把用户消息喂给 emotion_state_machine 观察（bot 自己的消息不喂，避免自反馈）
@@ -1771,7 +1786,8 @@ class SocialContextPlugin(
         now = time.time()
         max_age = max_age or self._cfg_int("judge_context_max_age", 180, 1)
         cutoff = now - max_age
-        messages = [m for m in group.messages if m.timestamp >= cutoff]
+        source = group.history_messages or group.messages
+        messages = [m for m in source if m.timestamp >= cutoff]
         pokes = [p for p in group.pokes if p.timestamp >= cutoff]
 
         if not messages and not pokes:
@@ -1793,6 +1809,8 @@ class SocialContextPlugin(
                 "latest_poke_sender",
                 "latest_poke_target",
                 "current_user_name",
+                "history_summary_tier2",
+                "history_summary_tier3",
             ),
         )
         fallback = self._default_judge_prompt_template()

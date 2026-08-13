@@ -122,6 +122,8 @@ class GroupContext:
     history_daily_updated: float = 0.0
     # v0.6.1+：压缩并发保护（同一群同时只能有 1 个压缩在跑；不持久化）
     history_compress_inflight: bool = False
+    # v0.8.20+：tier2/tier3 压缩用长缓冲；不持久化
+    history_messages: deque[MessageRecord] = field(default_factory=deque)
 
     def reset_daily_if_needed(self) -> None:
         today = date.today().isoformat()

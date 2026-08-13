@@ -561,6 +561,25 @@ class PluginHelperTests(unittest.TestCase):
         # u3=5000s 实际落在 tier3，u4=7200s 也 tier3
         self.assertEqual([m.sender_id for m in t3_msgs], ["u3", "u4"])
 
+    def test_get_messages_in_tier_prefers_history_messages(self) -> None:
+        """v0.8.20+：history_messages 非空时，压缩分档应优先读长缓冲。"""
+        now = 100000.0
+        group = GroupContext(
+            messages=deque([
+                MessageRecord("u-short", "short", "s", now - 10, False),
+            ]),
+            history_messages=deque([
+                MessageRecord("u1", "alice", "a", now - 300, False),
+            ]),
+        )
+        self.plugin.config = _Cfg({
+            "history_tier1_max_age": 180,
+            "history_tier2_max_age": 1800,
+            "history_tier3_max_age": 86400,
+        })
+        t2_msgs = self.plugin._get_messages_in_tier(group, now, 2)
+        self.assertEqual([m.sender_id for m in t2_msgs], ["u1"])
+
     def test_prune_stale_history_discards_after_1_day(self) -> None:
         """v0.6.0+：摘要超过 1 天自动抛弃"""
         now = 200000.0

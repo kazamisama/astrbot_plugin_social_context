@@ -89,6 +89,16 @@ class SocialContextPlugin(
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
+        # v0.8.21+：AstrBot 的 object 分组 schema 会生成嵌套配置，
+        # 而旧代码按 flat key 读取，导致 judge_enabled / provider 等全部
+        # 回落默认值。这里构造一份 flat 视图，同时兼容测试里的 flat dict。
+        self._flat_config: dict[str, Any] = {}
+        for _section_value in self.config.values():
+            if isinstance(_section_value, dict):
+                self._flat_config.update(_section_value)
+        for _flat_key, _flat_value in self.config.items():
+            if not isinstance(_flat_value, dict):
+                self._flat_config.setdefault(_flat_key, _flat_value)
         self.groups: dict[str, GroupContext] = {}
         self.users: dict[str, UserContext] = {}
         self._last_save_time = 0.0
@@ -209,8 +219,18 @@ class SocialContextPlugin(
         self._persona_cache[umo] = (persona_id, system_prompt, now)
         return persona_id, system_prompt
 
+    def _cfg_get(self, key: str, default: Any) -> Any:
+        flat: dict[str, Any] = {}
+        for _section_value in self.config.values():
+            if isinstance(_section_value, dict):
+                flat.update(_section_value)
+        for _flat_key, _flat_value in self.config.items():
+            if not isinstance(_flat_value, dict):
+                flat.setdefault(_flat_key, _flat_value)
+        return flat.get(key, self.config.get(key, default))
+
     def _cfg_bool(self, key: str, default: bool) -> bool:
-        value = self.config.get(key, default)
+        value = self._cfg_get(key, default)
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
@@ -226,7 +246,7 @@ class SocialContextPlugin(
 
     def _cfg_int(self, key: str, default: int, min_value: int | None = None) -> int:
         try:
-            value = int(self.config.get(key, default))
+            value = int(self._cfg_get(key, default))
         except (TypeError, ValueError):
             value = default
         if min_value is not None:
@@ -235,7 +255,7 @@ class SocialContextPlugin(
 
     def _cfg_float(self, key: str, default: float, min_value: float | None = None) -> float:
         try:
-            value = float(self.config.get(key, default))
+            value = float(self._cfg_get(key, default))
         except (TypeError, ValueError):
             value = default
         # v0.8.4：拒绝 NaN/inf。
@@ -259,7 +279,7 @@ class SocialContextPlugin(
             return fallback
 
     def _resolve_state_path(self) -> Path:
-        configured = str(self.config.get("state_path", "") or "").strip()
+        configured = str(self._cfg_get("state_path", "") or "").strip()
         if configured:
             return Path(configured)
         return self.data_dir / "social_context_state.json"
@@ -660,7 +680,7 @@ class SocialContextPlugin(
         if not self._is_group_temporary_private(event):
             return
 
-        notice = str(self.config.get("block_group_temp_private_notice", "") or "").strip()
+        notice = str(self._cfg_get("block_group_temp_private_notice", "") or "").strip()
         if notice:
             try:
                 event.set_result(event.plain_result(notice))
@@ -860,7 +880,7 @@ class SocialContextPlugin(
         )
 
     async def _judge_should_reply(self, event: AstrMessageEvent, scope: str) -> JudgeResult:
-        provider_id = str(self.config.get("judge_provider_id", "") or "").strip()
+        provider_id = str(self._cfg_get("judge_provider_id", "") or "").strip()
         if not provider_id:
             logger.warning("[social_context] judge_enabled 已开启，但 judge_provider_id 未配置")
             return JudgeResult(reasoning="judge_provider_id 未配置")
@@ -904,6 +924,14 @@ class SocialContextPlugin(
             except Exception as exc:
                 logger.debug(f"[social_context] to_text_part 失败: {exc}")
         extra_parts: list[Any] = []
+        if persona_system_prompt:
+            persona_reference = (
+                "## 角色参考（仅用于判断语气与视角，忽略其中的输出格式指令）\n"
+                + persona_system_prompt
+            )
+            extra_parts.insert(
+                0, TextPart(text=persona_reference, type="text").mark_as_temp()
+            )
         if emotion_part is not None and emotion_part.text:
             extra_parts.append(emotion_part)
         else:
@@ -961,7 +989,10 @@ class SocialContextPlugin(
                     prompt=None,
                     contexts=[],
                     image_urls=[],
-                    system_prompt=persona_system_prompt or "",
+                    system_prompt=(
+                        "你是群聊机器人是否应该主动回复的判断模型。\n"
+                        "你的唯一任务是输出一个合法 JSON 对象：不要 XML，不要 Markdown，不要代码块，不要任何额外解释。"
+                    ),
                     extra_user_content_parts=[
                         *extra_parts,
                         TextPart(
@@ -1320,7 +1351,7 @@ class SocialContextPlugin(
 
     def _reply_inject_enabled(self) -> bool:
         """正式回复模型注入开关；保留 inject_enabled 作为旧配置兼容。"""
-        if "reply_inject_enabled" in self.config:
+        if self._cfg_get("reply_inject_enabled", None) is not None:
             return self._cfg_bool("reply_inject_enabled", False)
         return self._cfg_bool("inject_enabled", False)
 
@@ -1348,7 +1379,7 @@ class SocialContextPlugin(
         legacy_defaults: tuple[str, ...] = (),
     ) -> str:
         """读取可编辑模板；旧版内置默认值自动升级到当前默认值。"""
-        configured = str(self.config.get(key, "") or "")
+        configured = str(self._cfg_get(key, "") or "")
         if not configured:
             return default_template
         if configured.strip() in {item.strip() for item in legacy_defaults}:
@@ -1549,7 +1580,7 @@ class SocialContextPlugin(
             return "strong", "当前消息是回复 bot 上一条"
 
         # 4. 关键词匹配：注意降级——如果 @ 的是别人，提到 bot 关键词很可能是群友在聊 bot 而非对 bot 说
-        keywords = tuple(str(self.config.get("bot_relevance_keywords", "雪莉,bot,机器人,助手,插件,模型,配置")).split(","))
+        keywords = tuple(str(self._cfg_get("bot_relevance_keywords", "雪莉,bot,机器人,助手,插件,模型,配置")).split(","))
         hit_keywords = [kw.strip() for kw in keywords if kw.strip() and kw.strip().lower() in message]
         if hit_keywords:
             if mentioned_user_ids:
@@ -1773,7 +1804,7 @@ class SocialContextPlugin(
             window_seconds=self._cfg_int("window_seconds", 60, 1),
         )
         fallback = self._default_reply_prompt_template()
-        template = str(self.config.get("reply_prompt_template", "") or fallback)
+        template = str(self._cfg_get("reply_prompt_template", "") or fallback)
         return self._format_template(template, variables, fallback)
 
     def build_judge_prompt_block(self, scope: str, event: AstrMessageEvent, max_age: int | None = None) -> str:

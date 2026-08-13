@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.8.21 - 2026-08-14
+
+### Fixed
+
+- **AstrBot 分组 schema 导致配置项全部读默认值**：
+  `_conf_schema.json` 使用 `object` 分组后，实际配置是嵌套结构，而代码仍按
+  flat key 读 `self.config.get("judge_enabled")`，导致 `judge_enabled` 读到
+  默认 `False`、`judge_provider_id` 读到空串，自主判断（读空气）静默失效。
+  修复：新增 `_cfg_get`，将各分组的叶子键扁平化后读取，并保持对旧扁平配置
+  和测试配置的兼容。
+  - 新增测试：`test_cfg_get_reads_nested_sections`
+
+- **judge 模型返回 XML 导致 JSON 解析失败**：
+  judge 请求原本把当前人格 `system_prompt` 直接放进 `system_prompt`，而人格
+  提示词带 XML 输出协议，优先级压过了决策提示的 JSON 要求，模型返回
+  `<thoughts>/<output>`。修复：judge 的 `system_prompt` 固定为 JSON-only
+  指令；人格提示词降级为用户内容里的「角色参考」，并标注忽略其中的输出格式
+  指令。
+
+### Changed
+
+- 测试：183 → 184（+1 条）。
+
+
 ## v0.8.20 - 2026-08-13
 
 ### Fixed

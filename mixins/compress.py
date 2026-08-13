@@ -137,7 +137,7 @@ class CompressMixin:
         """
         if not instruction or not parts:
             return None
-        provider_id = str(self.config.get("judge_provider_id", "") or "").strip()
+        provider_id = str(self._cfg_get("judge_provider_id", "") or "").strip()
         if not provider_id:
             return None
         try:

@@ -134,6 +134,16 @@ class PluginHelperTests(unittest.TestCase):
         self.plugin.config = _Cfg({"flag": "on"})
         self.assertTrue(self.plugin._cfg_bool("flag", False))
 
+    def test_cfg_get_reads_nested_sections(self) -> None:
+        """v0.8.21+：object 分组 schema 会生成嵌套配置，必须能读到叶子键。"""
+        self.plugin.config = _Cfg({
+            "basic": {"enabled": False},
+            "judge": {"judge_enabled": True, "judge_provider_id": "p1"},
+        })
+        self.assertFalse(self.plugin._cfg_bool("enabled", True))
+        self.assertTrue(self.plugin._cfg_bool("judge_enabled", False))
+        self.assertEqual(self.plugin._cfg_get("judge_provider_id", ""), "p1")
+
     # ---- v0.8.4：_cfg_float 拒绝 NaN/inf ----
 
     def test_cfg_float_returns_valid_finite_value(self) -> None:
@@ -1500,8 +1510,8 @@ class JudgeLlmCallTests(unittest.TestCase):
 
         # 主路径：prompt=None
         self.assertIsNone(captured.get("prompt"))
-        # system_prompt 仍是 persona
-        self.assertEqual(captured.get("system_prompt"), "")
+        # system_prompt 改为 JSON-only，避免 persona 的 XML 输出协议污染 judge
+        self.assertIn("你的唯一任务是输出一个合法 JSON 对象", captured.get("system_prompt", ""))
         # decision prompt 以 TextPart 形式写到 extra_user_content_parts
         parts = captured.get("extra_user_content_parts")
         self.assertIsNotNone(parts)

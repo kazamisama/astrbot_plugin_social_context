@@ -15,6 +15,12 @@
                 "hint": "v0.8.17+ 默认关闭：私聊（webchat / OneBot 好友）也会注入 social context 块。开启后仅群聊注入——私聊跳过整段 on_llm_request 注入逻辑。注意 on_group_message 钩子本身只接 GROUP_MESSAGE 事件（不受此开关影响），私聊只会走到 on_llm_request 注入空块（群 state 字典为空）。",
                 "type": "bool",
                 "default": false
+            },
+            "group_whitelist": {
+                "description": "群聊白名单（social_context 仅生效的群）",
+                "hint": "留空表示全部群生效。填写群号后，本插件的状态观察、LLM 注入、智能引用、命令与群成员工具只在白名单群生效。",
+                "type": "list",
+                "default": []
             }
         }
     },

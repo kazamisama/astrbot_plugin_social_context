@@ -144,6 +144,15 @@ class PluginHelperTests(unittest.TestCase):
         self.assertTrue(self.plugin._cfg_bool("judge_enabled", False))
         self.assertEqual(self.plugin._cfg_get("judge_provider_id", ""), "p1")
 
+    def test_group_whitelist_filters_events(self) -> None:
+        """v0.8.22+：group_whitelist 非空时，只有白名单群允许处理。"""
+        self.plugin.config = _Cfg({"group_whitelist": ["g1", 123]})
+        self.assertTrue(self.plugin._is_group_allowed(_Event(group_id="g1")))
+        self.assertTrue(self.plugin._is_group_allowed(_Event(group_id="123")))
+        self.assertFalse(self.plugin._is_group_allowed(_Event(group_id="g2")))
+        self.plugin.config = _Cfg({})
+        self.assertTrue(self.plugin._is_group_allowed(_Event(group_id="g-any")))
+
     # ---- v0.8.4：_cfg_float 拒绝 NaN/inf ----
 
     def test_cfg_float_returns_valid_finite_value(self) -> None:
@@ -1508,20 +1517,14 @@ class JudgeLlmCallTests(unittest.TestCase):
 
         result = asyncio.run(self.plugin._judge_should_reply(self._make_event(), "group-1"))
 
-        # 主路径：prompt=None
-        self.assertIsNone(captured.get("prompt"))
+        # v0.8.22+：decision prompt 必须走 prompt=，否则 OpenAI provider 会忽略
+        # extra_user_content_parts，导致 judge 拿不到上下文。
+        self.assertIn("你是群聊机器人是否应该主动回复的判断模型", captured.get("prompt", ""))
+        self.assertIn("请只返回 JSON", captured.get("prompt", ""))
         # system_prompt 改为 JSON-only，避免 persona 的 XML 输出协议污染 judge
         self.assertIn("你的唯一任务是输出一个合法 JSON 对象", captured.get("system_prompt", ""))
-        # decision prompt 以 TextPart 形式写到 extra_user_content_parts
-        parts = captured.get("extra_user_content_parts")
-        self.assertIsNotNone(parts)
-        self.assertEqual(1, len(parts))
-        part = parts[0]
-        # 内容包含决策 prompt 的关键标识
-        self.assertIn("你是群聊机器人是否应该主动回复的判断模型", part.text)
-        self.assertIn("请只返回 JSON", part.text)
-        # .mark_as_temp() 标记
-        self.assertTrue(getattr(part, "_no_save", False))
+        # 无人格、无 emotion 时，extra_user_content_parts 应为空列表
+        self.assertEqual([], captured.get("extra_user_content_parts"))
         # judge 成功：should_reply + confidence 解析正确
         self.assertTrue(result.should_reply)
         self.assertGreaterEqual(result.confidence, 0.65)
@@ -1530,11 +1533,13 @@ class JudgeLlmCallTests(unittest.TestCase):
         """v0.8.9+：retry 时 retry_note 追加到 TextPart.text，不再污染 prompt=。"""
         call_count = {"n": 0}
         captured_parts: list = []
+        captured_prompts: list = []
 
         class _Prov:
             async def text_chat(self, **kwargs):
                 call_count["n"] += 1
                 captured_parts.append(list(kwargs.get("extra_user_content_parts") or []))
+                captured_prompts.append(kwargs.get("prompt", ""))
                 if call_count["n"] == 1:
                     # 第一次返回非法 JSON
                     class _Bad:
@@ -1561,17 +1566,15 @@ class JudgeLlmCallTests(unittest.TestCase):
 
         # 重试 1 次，共 2 次调用
         self.assertEqual(call_count["n"], 2)
-        # 两次都走 extra_user_content_parts 路径
+        # 无人格、无 emotion 时，extra_user_content_parts 保持为空
         self.assertEqual(len(captured_parts), 2)
         for parts in captured_parts:
             self.assertIsNotNone(parts)
-            self.assertEqual(1, len(parts))
-        # 第一次的 TextPart 没有 retry_note
-        self.assertNotIn("请注意：你必须只返回合法 JSON", captured_parts[0][0].text)
-        # 第二次的 TextPart 追加了 retry_note
-        self.assertIn("请注意：你必须只返回合法 JSON", captured_parts[1][0].text)
-        # 第二次依然 mark_as_temp
-        self.assertTrue(getattr(captured_parts[1][0], "_no_save", False))
+            self.assertEqual(0, len(parts))
+        # 第一次的 prompt 没有 retry_note
+        self.assertNotIn("请注意：你必须只返回合法 JSON", captured_prompts[0])
+        # 第二次的 prompt 追加了 retry_note
+        self.assertIn("请注意：你必须只返回合法 JSON", captured_prompts[1])
         # 重试成功 → should_reply=False
         self.assertFalse(result.should_reply)
 
@@ -1609,9 +1612,9 @@ class JudgeLlmCallTests(unittest.TestCase):
 
         parts = captured.get("extra_user_content_parts")
         self.assertIsNotNone(parts)
-        self.assertEqual(2, len(parts))
+        self.assertEqual(1, len(parts))
         self.assertEqual("emotion-state", parts[0].text)
-        self.assertIn("你是群聊机器人是否应该主动回复的判断模型", parts[1].text)
+        self.assertIn("你是群聊机器人是否应该主动回复的判断模型", captured.get("prompt", ""))
         self.assertFalse(result.should_reply)
 
 

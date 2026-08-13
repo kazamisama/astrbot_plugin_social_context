@@ -311,6 +311,19 @@ class SocialContextPlugin(
         except Exception:
             return str(event.get_sender_id())
 
+    def _group_whitelist(self) -> set[str]:
+        raw = self._cfg_get("group_whitelist", [])
+        if not isinstance(raw, (list, tuple)):
+            return set()
+        return {str(item).strip() for item in raw if str(item).strip()}
+
+    def _is_group_allowed(self, event: AstrMessageEvent) -> bool:
+        whitelist = self._group_whitelist()
+        if not whitelist:
+            return True
+        group_id = self._stringify(self._safe_call(event.get_group_id))
+        return group_id in whitelist
+
     # v0.7.0+：群成员查询辅助方法已抽到 mixins/members.py（MembersMixin）。
     # 带 @filter.llm_tool 的 get_group_members_info 必须留在本模块（按 __module__ 注册）。
 
@@ -337,6 +350,8 @@ class SocialContextPlugin(
         group_id = event.get_group_id()
         if not group_id:
             return self._members_json({"error": "这不是群聊"})
+        if not self._is_group_allowed(event):
+            return self._members_json({"error": "该群未启用 social_context"})
         if not isinstance(event, AiocqhttpMessageEvent):
             return self._members_json(
                 {"error": f"此功能仅支持QQ群聊(aiocqhttp平台)，当前平台为 {event.get_platform_name()}"}
@@ -700,6 +715,8 @@ class SocialContextPlugin(
         group_id = event.get_group_id()
         if not group_id:
             return
+        if not self._is_group_allowed(event):
+            return
 
         sender_id = str(event.get_sender_id())
         if not sender_id:
@@ -800,6 +817,8 @@ class SocialContextPlugin(
 
         group_id = str(raw_message.get("group_id") or event.get_group_id() or "")
         if not group_id:
+            return
+        if not self._is_group_allowed(event):
             return
 
         sender_id = str(raw_message.get("user_id") or "")
@@ -978,27 +997,20 @@ class SocialContextPlugin(
         retry_note = ""
         for attempt in range(max_retries + 1):
             try:
-                # v0.8.9+：把 judge 决策 prompt 放到 extra_user_content_parts
-                # 而不是 prompt=，与 v0.8.8 主回复通道改造保持一致——同仓
-                # emotion_state_machine / livingmemory 的官方模式都是
-                # ``TextPart(text=..., type="text").mark_as_temp()`` 写到
-                # 用户消息末尾。persona_system_prompt 仍走 system_prompt。
-                # ``.mark_as_temp()`` 在 judge 路径意义不大（judge 没有
-                # 持久化 history），但保持模式一致便于未来共构。
+                # v0.8.22+：decision prompt 必须走 prompt=，因为 OpenAI provider
+                # 的 _prepare_chat_payload 只在 prompt is not None 时组装 user
+                # 消息；prompt=None 会丢弃 extra_user_content_parts，导致 judge
+                # 拿不到任何上下文。persona/emotion 作为 extra parts 追加在
+                # decision prompt 之后。
                 response = await provider.text_chat(
-                    prompt=None,
+                    prompt=prompt + retry_note,
                     contexts=[],
                     image_urls=[],
                     system_prompt=(
                         "你是群聊机器人是否应该主动回复的判断模型。\n"
                         "你的唯一任务是输出一个合法 JSON 对象：不要 XML，不要 Markdown，不要代码块，不要任何额外解释。"
                     ),
-                    extra_user_content_parts=[
-                        *extra_parts,
-                        TextPart(
-                            text=prompt + retry_note, type="text"
-                        ).mark_as_temp()
-                    ],
+                    extra_user_content_parts=extra_parts,
                 )
                 content = (getattr(response, "completion_text", "") or "").strip()
                 data = _extract_json(content)
@@ -1127,6 +1139,8 @@ class SocialContextPlugin(
             return
 
         group_id = event.get_group_id()
+        if not self._is_group_allowed(event):
+            return
         # v0.8.17+：only_group 默认 false，私聊也注入 social context 块。
         # 私聊没 group_id，scope 走 webchat 折叠路径，喂 ESM 的 scope 与
         # ESM 内部 _scope_id 完全一致（v0.8.16+ _emotion_scope 改 async 后
@@ -1211,6 +1225,8 @@ class SocialContextPlugin(
         group_id = event.get_group_id()
         if not group_id:
             return
+        if not self._is_group_allowed(event):
+            return
         scope = await self._emotion_scope(event)
         group = self._get_group(scope)
         now = time.time()
@@ -1249,6 +1265,9 @@ class SocialContextPlugin(
     @filter.command("social_context")
     async def social_context_status(self, event: AstrMessageEvent):
         """查看当前会话的 social context 状态。"""
+        if not self._is_group_allowed(event):
+            event.set_result(event.plain_result("当前会话未启用 social_context"))
+            return
         message = (event.message_str or "").strip().lower()
         if "judge_last" in message:
             await self._send_judge_last(event)
@@ -1284,6 +1303,9 @@ class SocialContextPlugin(
         await self._send_judge_last(event)
 
     async def _send_judge_last(self, event: AstrMessageEvent) -> None:
+        if not self._is_group_allowed(event):
+            event.set_result(event.plain_result("当前会话未启用 social_context"))
+            return
         scope = await self._emotion_scope(event)
         group = self._get_group(scope)
         data = group.last_judge_result or {}
@@ -1344,6 +1366,9 @@ class SocialContextPlugin(
     @filter.command("social_context_reset")
     async def social_context_reset(self, event: AstrMessageEvent):
         """重置当前会话的 social context 状态。"""
+        if not self._is_group_allowed(event):
+            event.set_result(event.plain_result("当前会话未启用 social_context"))
+            return
         scope = await self._emotion_scope(event)
         self.groups.pop(scope, None)
         self._save_if_needed(force=True)

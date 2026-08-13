@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.8.22 - 2026-08-14
+
+### Fixed
+
+- **judge 上下文被静默丢弃**：
+  `_judge_should_reply` 之前用 `prompt=None` 加 `extra_user_content_parts`
+  传决策 prompt，但 AstrBot 的 OpenAI provider 只有在 `prompt is not None`
+  时才会把额外内容组装进 user 消息，导致 judge 只收到 JSON-only system
+  prompt，完全没有群聊上下文。修复：决策 prompt 改走 `prompt=`，persona /
+  emotion 仍作为 `extra_user_content_parts` 追加。
+
+### Added
+
+- **`group_whitelist` 群聊白名单**：
+  新增 `basic.group_whitelist` 配置项，留空表示所有群生效；填写群号后，
+  状态观察、LLM 注入、智能引用、`/social_context*` 命令和群成员工具只在
+  白名单群生效。
+  - 新增测试：`test_group_whitelist_filters_events`
+
+### Changed
+
+- 测试：184 → 185（+1 条）。
+
+
 ## v0.8.21 - 2026-08-14
 
 ### Fixed

@@ -133,14 +133,12 @@ class GroupContext:
             self.total_pokes_today = 0
             self.autonomous_reply_count_today = 0
 
-    def prune(self, now: float, window: int, max_messages: int) -> None:
+    def prune(self, now: float, window: int) -> None:
         cutoff = now - window
         while self.messages and self.messages[0].timestamp < cutoff:
             self.messages.popleft()
         while self.pokes and self.pokes[0].timestamp < cutoff:
             self.pokes.popleft()
-        while len(self.messages) > max_messages:
-            self.messages.popleft()
 
 
 @dataclass

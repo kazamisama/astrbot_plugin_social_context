@@ -35,12 +35,6 @@
                 "type": "int",
                 "default": 60
             },
-            "max_messages": {
-                "description": "最多保留消息数",
-                "hint": "窗口外还会按数量做硬限制",
-                "type": "int",
-                "default": 80
-            },
             "active_message_threshold": {
                 "description": "活跃阈值",
                 "hint": "窗口消息数达到该值且参与者至少2人，视为群聊较活跃",

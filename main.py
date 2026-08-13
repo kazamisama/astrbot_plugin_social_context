@@ -766,7 +766,7 @@ class SocialContextPlugin(
             if sender_role in ("owner", "admin", "member"):
                 user.role = sender_role
 
-        group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
+        group.prune(now, self._cfg_int("window_seconds", 60, 1))
         history_max = self._cfg_int("history_max_messages", 2000, 1)
         history_cutoff = now - self._cfg_int("history_tier3_max_age", 86400, 1)
         while group.history_messages and group.history_messages[0].timestamp < history_cutoff:
@@ -841,7 +841,7 @@ class SocialContextPlugin(
         target.poke_received_today += 1
         target.last_poke_time = now
 
-        group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
+        group.prune(now, self._cfg_int("window_seconds", 60, 1))
         self._save_if_needed(force=True)
 
     async def _maybe_trigger_autonomous_reply(self, event: AstrMessageEvent, scope: str) -> None:
@@ -1170,7 +1170,7 @@ class SocialContextPlugin(
         if self._reply_inject_enabled():
             inject_cd = self._cfg_float("inject_cd", 20.0, 0.0)
             if now - group.last_injected_time >= inject_cd:
-                group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
+                group.prune(now, self._cfg_int("window_seconds", 60, 1))
                 block = self.build_reply_prompt_block(scope, event)
                 if block:
                     group.last_injected_time = now
@@ -1234,7 +1234,6 @@ class SocialContextPlugin(
         group.prune(
             now,
             self._cfg_int("window_seconds", 60, 1),
-            self._cfg_int("max_messages", 80, 1),
         )
 
         threshold = self._cfg_int("reply_step_threshold", 3, 0)
@@ -1262,6 +1261,55 @@ class SocialContextPlugin(
             f"[social_context] 智能引用：原消息 {target_id} 后被插 {pushed} 条"
         )
 
+    @staticmethod
+    def _extract_result_text(result: Any) -> str:
+        chain = getattr(result, "chain", None) or []
+        parts: list[str] = []
+        for seg in chain:
+            text = getattr(seg, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+                continue
+            data = getattr(seg, "data", None)
+            if isinstance(data, dict) and isinstance(data.get("text"), str):
+                parts.append(data["text"])
+        return " ".join(part.strip() for part in parts if part.strip())
+
+    @filter.after_message_sent()
+    async def on_after_message_sent(self, event: AstrMessageEvent) -> None:
+        """把 bot 已发送的回复写回群状态，保证 tier1/2/3 包含 bot 自身消息。"""
+        if not self._cfg_bool("enabled", True):
+            return
+        if not self._is_group_allowed(event):
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+        content = self._extract_result_text(event.get_result())
+        if not content:
+            return
+        scope = await self._emotion_scope(event)
+        group = self._get_group(scope)
+        now = time.time()
+        self_id = str(event.get_self_id())
+        message_id = str(
+            getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+        )
+        record = MessageRecord(
+            sender_id=self_id,
+            sender_name="bot",
+            content=content,
+            timestamp=now,
+            is_bot=True,
+            message_id=message_id,
+        )
+        group.messages.append(record)
+        group.history_messages.append(record)
+        group.last_bot_reply_time = now
+        group.total_messages_today += 1
+        group.prune(now, self._cfg_int("window_seconds", 60, 1))
+        self._save_if_needed()
+
     @filter.command("social_context")
     async def social_context_status(self, event: AstrMessageEvent):
         """查看当前会话的 social context 状态。"""
@@ -1275,7 +1323,7 @@ class SocialContextPlugin(
         scope = await self._emotion_scope(event)
         group = self._get_group(scope)
         now = time.time()
-        group.prune(now, self._cfg_int("window_seconds", 60, 1), self._cfg_int("max_messages", 80, 1))
+        group.prune(now, self._cfg_int("window_seconds", 60, 1))
 
         active_users = self._active_users(group)
         vibe = self._vibe_label(len(group.messages), len(active_users))

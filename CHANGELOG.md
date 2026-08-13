@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.8.23 - 2026-08-14
+
+### Added
+
+- **bot 自身消息进入 tier1/2/3**：
+  新增 `after_message_sent` 钩子，把 bot 已发送的回复写回 `messages` 和
+  `history_messages`，因此 bot 消息会参与短期上下文与后续压缩。
+
+### Changed
+
+- **移除 tier1 消息数量上限**：
+  删除 `max_messages` 配置项，`GroupContext.prune` 改为只按时间窗口裁切，
+  不再按消息条数硬裁。
+
+
 ## v0.8.22 - 2026-08-14
 
 ### Fixed

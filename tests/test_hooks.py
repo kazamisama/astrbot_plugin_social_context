@@ -34,6 +34,14 @@ class _HookTestBase(unittest.TestCase):
         return _real_plugin(self.state_path, **overrides)
 
 
+class DataDirTests(_HookTestBase):
+    def test_data_dir_is_under_plugin_data(self) -> None:
+        data_dir = self.plugin.data_dir
+        self.assertTrue(data_dir.is_dir())
+        self.assertEqual(data_dir.name, "astrbot_plugin_social_context")
+        self.assertEqual(data_dir.parent.name, "plugin_data")
+
+
 class PokeHookTests(_HookTestBase):
     def _poke_event(self, **raw) -> _AiocqhttpEvent:
         payload = {

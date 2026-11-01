@@ -1,7 +1,7 @@
 # social_context TODO
 
 > 历史脉络：原聚焦 ESM v0.10.0 跨插件改造（阶段一+二已完工，阶段三已定论取消）
-> 当前版本：**v0.9.0**（2026-11-01，完备性/冗余性审计后的集中清理）
+> 当前版本：**v0.9.1**（2026-11-01，按仓库规范对齐的收尾）
 
 ---
 
@@ -19,6 +19,16 @@
 - [x] P2 测试假对象抽 `tests/_fakes.py`
 - [x] P3 旧内置模板改 sha1 摘要识别（删 4 个 `_legacy_*` 方法）
 - [x] 收尾：CHANGELOG v0.9.0、metadata 版本、README 白名单/淘汰章节、232 用例全绿、ruff F401/F811 干净
+
+## 0.1 v0.9.1 仓库规范收尾 ✅
+
+按《AstrBot 插件仓库规范与推荐结构》v1.1 对齐仓库，不改运行行为：
+
+- [x] `LICENSE` 补全 MIT 正文
+- [x] 新增 `DEVELOPMENT.md`（结构、硬性契约、命令、拆分建议）
+- [x] README「开发与测试」改「模块 → 职责」表
+- [x] 数据目录改用 `StarTools.get_data_dir()`
+- [x] `.gitignore` 忽略 `.pytest_cache/`、`.ruff_cache/`
 
 ---
 

@@ -2,7 +2,7 @@
 
 无装饰器的纯逻辑，依赖主类提供的 self.state_path / self.groups / self.users /
 self._last_save_time / self._cfg_bool / self._cfg_int / self._prune_stale_history。
-_resolve_data_dir / _resolve_state_path 因涉及 __file__ 路径语义留在 main.py。
+_resolve_data_dir / _resolve_state_path 因依赖插件名与 AstrBot 的 StarTools 留在 main.py。
 """
 
 from __future__ import annotations

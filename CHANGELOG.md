@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.9.1 - 2026-11-01
+
+按仓库规范做的一轮收尾，不改运行行为。
+
+### Added
+
+- **`DEVELOPMENT.md`**：多文件结构说明、模块职责表、五条硬性契约
+  （钩子必须留在 `main.py`、依赖单向、状态单一归属、配置归一化单一入口、
+  数据目录走官方 API）、本地命令与拆分建议。
+
+### Changed
+
+- **数据目录改用官方 API**：`StarTools.get_data_dir()` 按 `ASTRBOT_ROOT`
+  定位，不再相对当前工作目录手拼 `data/plugin_data/...`；插件名常量与
+  `metadata.name` 保持一致。
+- **README**：「开发与测试」的文件清单改为「模块 → 职责」表，内部细节移入
+  `DEVELOPMENT.md`。
+
+### Fixed
+
+- **`LICENSE` 补全 MIT 正文**：此前只有标题与版权行，缺少授权条款。
+
+### Chore
+
+- `.gitignore` 忽略 `.pytest_cache/` 与 `.ruff_cache/`。
+
 ## v0.9.0 - 2026-11-01
 
 一轮"完备性 / 冗余性"审计后的集中清理。**升级前请留意 group_whitelist 与

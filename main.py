@@ -27,6 +27,7 @@ from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
+from astrbot.core.star.star_tools import StarTools
 
 try:
     from .prompt_security import scan_injection_risk, scan_variables
@@ -77,6 +78,9 @@ except ImportError:  # pragma: no cover - 兼容直接脚本方式导入 main.py
     from mixins.members import MembersMixin
     from mixins.persistence import PersistenceMixin
 
+
+# 数据目录按插件名定位，与 metadata.name 保持一致（卸载时按目录名清理 data/plugin_data/<目录名>）。
+_PLUGIN_NAME = "astrbot_plugin_social_context"
 
 # v0.9.0+：旧内置模板只保留 sha1 摘要用于识别（配置命中 → 自动升级到当前默认值）。
 # 之前是把 4 份旧文案各写成一个 _legacy_* 方法，main.py 因此多背 140 行纯数据。
@@ -283,14 +287,8 @@ class SocialContextPlugin(
         return value
 
     def _resolve_data_dir(self) -> Path:
-        base = Path("data") / "plugin_data" / "astrbot_plugin_social_context"
-        try:
-            base.mkdir(parents=True, exist_ok=True)
-            return base
-        except Exception:
-            fallback = Path(__file__).parent / "data"
-            fallback.mkdir(parents=True, exist_ok=True)
-            return fallback
+        # 用官方 API 定位数据目录（按 ASTRBOT_ROOT 而非当前工作目录解析），不手拼路径。
+        return StarTools.get_data_dir(_PLUGIN_NAME)
 
     def _resolve_state_path(self) -> Path:
         configured = str(self._cfg_get("state_path", "") or "").strip()

@@ -1,6 +1,6 @@
 # Social Context 群聊状态感知层
 
-> AstrBot 插件 · 平台 `aiocqhttp` · AstrBot >= 4.13.0 · 当前版本 v0.9.0
+> AstrBot 插件 · 平台 `aiocqhttp` · AstrBot >= 4.13.0 · 当前版本 v0.9.1
 
 插件维护每个群的**短期氛围、互动事件、用户熟悉度**和**分层历史摘要**，在需要时把一段低噪声的社交上下文交给 LLM；也可以自己判断「现在适不适合插一句话」。
 
@@ -442,27 +442,22 @@ v0.9.0 起不再在代码里保存旧版默认模板，只保留它们的 sha1 �
 
 ## 开发与测试
 
-目录结构：
+插件按领域拆成多个模块，`main.py` 只保留插件类与全部事件钩子。模块职责与硬性契约（钩子位置、依赖方向、状态归属、配置入口、数据目录）见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
-```text
-main.py                  插件主体：事件钩子、注入、判断流程、命令、LLM 工具
-models.py                数据结构（GroupContext / UserContext / 消息与戳一戳记录）
-prompt_security.py       注入扫描与变量扫描
-mixins/persistence.py    状态保存 / 载入 / 淘汰
-mixins/compress.py       历史分层压缩、摘要过期清理循环
-mixins/members.py        群成员查询辅助方法
-mixins/emotion_bridge.py 情绪状态机桥接
-output_step/reply.py     智能引用输出微调
-tests/                   单元测试与钩子集成测试
-```
+| 模块 | 职责 |
+|---|---|
+| `main.py` | 插件类、事件钩子、配置访问器、注入与判断编排、命令 |
+| `models.py` | 数据结构与共享纯函数 |
+| `prompt_security.py` | 注入扫描与变量扫描 |
+| `mixins/` | 状态持久化、历史压缩、群成员查询、情绪桥接 |
+| `output_step/` | 智能引用输出微调 |
+| `tests/` | 单元测试与钩子集成测试 |
 
 运行测试（需要 AstrBot 自带的 Python 环境，测试会导入 AstrBot 的模块）：
 
 ```bash
 python -m pytest tests -q
 ```
-
-测试启动时会把 AstrBot 的 app 目录加入 `sys.path`；位置不同时可用环境变量 `ASTRBOT_APP_PATH` 指定。
 
 代码风格检查：
 
@@ -474,7 +469,7 @@ python -m ruff check .
 
 ## 版本与兼容
 
-- 当前版本 v0.9.0，完整变更见 CHANGELOG.md。
+- 当前版本 v0.9.1，完整变更见 CHANGELOG.md。
 - 平台支持：aiocqhttp（QQ）。
 - AstrBot 版本要求：>= 4.13.0。
 - 情绪状态机插件（astrbot_plugin_emotion_state_machine）为可选依赖：未安装时情绪与精力相关功能静默降级，其余功能不受影响；完整功能建议 v0.10.0+。

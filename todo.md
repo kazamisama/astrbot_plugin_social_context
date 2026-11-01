@@ -29,6 +29,7 @@
 - [x] README「开发与测试」改「模块 → 职责」表
 - [x] 数据目录改用 `StarTools.get_data_dir()`
 - [x] `.gitignore` 忽略 `.pytest_cache/`、`.ruff_cache/`
+- [x] `.gitattributes` 让市场发布包排除 `tests/` 与开发文件
 
 ---
 

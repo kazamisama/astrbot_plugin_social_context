@@ -69,5 +69,6 @@ python -m ruff check .
 - `python -m py_compile main.py` 通过
 - `python -m pytest tests -q` 全绿、`python -m ruff check .` 无新增告警
 - `metadata.yaml`、CHANGELOG 顶部、README 版本引用三处一致
+- 若要求市场包不含 `tests/`：待发布 commit 已包含 `.gitattributes`（`git archive HEAD` 自检后发布）
 - README 配置表与 `_conf_schema.json` 键集合一致
 - 没有未使用 import、死代码、只写不读的字段

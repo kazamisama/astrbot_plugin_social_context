@@ -392,28 +392,30 @@ class CompressMixin:
         return max(60, min(discard // 4, 3600))
 
     async def _stale_history_prune_loop(self) -> None:
-        """v0.6.3+：定时清理过期摘要 + force save。
+        """定时清理过期摘要、淘汰无活动状态，并 force save。
 
         之前 `_prune_stale_history` 只在 load / save / 注入 prompt 前跑——
         完全静默的群，摘要过期后会一直留在内存和 JSON 里。
-        这个循环兜底：每隔一段时间扫一次全群，把过期的清掉。
+        这个循环兜底：每隔一段时间扫一次全群，把过期的清掉；
+        v0.9.0+ 同时按 state_group_ttl / state_user_ttl 淘汰整条状态。
         """
         while True:
             try:
                 interval = self._stale_prune_interval()
                 await asyncio.sleep(interval)
-                if not self._cfg_bool("persist_enabled", True):
-                    continue
                 now = time.time()
-                pruned = 0
-                for group in self.groups.values():
-                    before_t2 = bool(group.history_summary)
-                    before_t3 = bool(group.history_daily_summary)
-                    self._prune_stale_history(group, now)
-                    after_t2 = bool(group.history_summary)
-                    after_t3 = bool(group.history_daily_summary)
-                    if (before_t2, before_t3) != (after_t2, after_t3):
-                        pruned += 1
+                # 先淘汰整条状态，再清过期摘要（摘要时间戳是群活动量的一部分）。
+                # 淘汰只关乎内存，persist_enabled=False 也必须跑，否则 users 无限增长。
+                pruned = self._prune_state(now)
+                if self._cfg_bool("persist_enabled", True):
+                    for group in self.groups.values():
+                        before_t2 = bool(group.history_summary)
+                        before_t3 = bool(group.history_daily_summary)
+                        self._prune_stale_history(group, now)
+                        after_t2 = bool(group.history_summary)
+                        after_t3 = bool(group.history_daily_summary)
+                        if (before_t2, before_t3) != (after_t2, after_t3):
+                            pruned += 1
                 if pruned > 0:
                     # 内存清掉后立刻 force save，把清掉的结果同步到磁盘
                     self._save_if_needed(force=True)

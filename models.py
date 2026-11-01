@@ -77,15 +77,6 @@ class MessageRecord:
     # 仅在内存中使用（不持久化），用于按消息 id 在窗口中定位原消息。
     # 进程重启后会被 _load_state 默认为空字符串。
     message_id: str = ""
-    # v0.5.3+：主语指向信号（均不持久化）
-    # - reply_to_sender_id：这条消息是回复谁（来自 chain 的 Reply 组件，回溯到原消息 sender）
-    # - mentioned_user_ids：@ 了哪些人（来自 chain 的 At 组件）
-    # - is_at_bot：是否明确 @ 了 bot
-    # - is_at_all：是否 @全体成员
-    reply_to_sender_id: str = ""
-    mentioned_user_ids: tuple[str, ...] = ()
-    is_at_bot: bool = False
-    is_at_all: bool = False
 
 
 @dataclass

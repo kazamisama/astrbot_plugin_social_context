@@ -1,7 +1,24 @@
 # social_context TODO
 
 > 历史脉络：原聚焦 ESM v0.10.0 跨插件改造（阶段一+二已完工，阶段三已定论取消）
-> 当前版本：**v0.8.15**（commit `3f1ab20`，2026-07-01）
+> 当前版本：**v0.9.0**（2026-11-01，完备性/冗余性审计后的集中清理）
+
+---
+
+## 0. v0.9.0 审计清理 ✅
+
+完备性 / 冗余性审计（行级覆盖 68.4%，持久化层零测试）后的整改，按优先级一次做完：
+
+- [x] P0 持久化往返测试（真 `__init__` + 临时 `state_path`）
+- [x] P0 用户/群状态淘汰（`state_group_ttl` / `state_user_ttl` / `state_user_max`）+ `_peek_user` 读不创建
+- [x] P1 闸门统一（命令、群成员工具、临时会话拦截都受 `enabled` + 白名单约束）
+- [x] P1 `judge_enabled` 代码默认值对齐 schema
+- [x] P1 删除死件（`_flat_config`、`_build_context_block`、`_top_speakers`、只写字段、未用导入）
+- [x] P2 `_load_state` 逐条容错 + 未知字段忽略
+- [x] P2 钩子/命令面集成测试（`tests/test_hooks.py`）
+- [x] P2 测试假对象抽 `tests/_fakes.py`
+- [x] P3 旧内置模板改 sha1 摘要识别（删 4 个 `_legacy_*` 方法）
+- [x] 收尾：CHANGELOG v0.9.0、metadata 版本、README 白名单/淘汰章节、232 用例全绿、ruff F401/F811 干净
 
 ---
 

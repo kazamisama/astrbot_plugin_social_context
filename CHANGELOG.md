@@ -1,5 +1,70 @@
 # Changelog
 
+## v0.9.0 - 2026-11-01
+
+一轮"完备性 / 冗余性"审计后的集中清理。**升级前请留意 group_whitelist 与
+state_* 三项新配置**：白名单为空 = 全部不生效（v0.8.24 起的语义，本次把它
+落实到所有入口，不再有"键缺失就全生效"的隐藏后门）。
+
+### Added
+
+- **状态淘汰**：新增 `state_group_ttl`（默认 604800 秒）、`state_user_ttl`
+  （默认 604800 秒）、`state_user_max`（默认 5000）三项持久化配置。
+  此前 `users` 永不出清、`groups` 只能靠 `/social_context_reset` 删，
+  一个只在群里说过一句话的人会永久占内存并每次全量落盘。
+- **钩子/命令面集成测试**：新增 `tests/test_hooks.py`，覆盖
+  `on_group_poke`、`on_decorating_result`、`on_after_message_sent`、
+  `social_context*` 命令与 `get_group_members_info` 工具（含闸门、降级路径）。
+- **持久化往返测试**：新增真 `__init__` + 临时 `state_path` 的写盘/读回用例，
+  此前所有测试都用 `__new__` 绕过初始化，`_load_state` 与 `_save_if_needed`
+  的写盘路径从未被执行过。
+- **启动配置自检**：`group_whitelist` 为空、或 `judge_enabled` 已开启但
+  `judge_provider_id` 为空时，启动日志各给一条 warning —— 这两种配置都不报错，
+  但插件实际上什么都不会做。
+
+### Changed
+
+- **闸门统一**：`get_group_members_info`、`social_context_status`、
+  `social_context_judge_last`、`social_context_reset` 现在同样受
+  `enabled` 与群白名单约束；群聊临时会话拦截也会跳过白名单外的来源群。
+- **`group_whitelist` 去掉三态**：只有"白名单里的群生效"一种含义，
+  不再因为键缺失而变成"全部生效"。
+- **`judge_enabled` 代码默认值对齐 schema**（false → true）。
+- **状态读取不再顺手创建用户**：构造 prompt 时改用 `_peek_user`。
+- **`_load_state` 逐条容错**：一条坏记录只丢它自己，不再让同段后续条目全丢；
+  状态文件里多出来的未知字段直接忽略。
+- **`judge_provider_id` 未配置不再逐条刷日志**：改为启动时提示一次，后续命中判断
+  链路时只记 debug（此前每条群消息一条 warning）。
+- **README 整体重写**：按现状列出全部 10 个分组的配置项，补齐群成员工具、命令权限、
+  故障排查；修正「依赖要求」措辞（ESM 是可选依赖，只在缺失时降级）；删除文档里
+  已不存在的 `emotion_self_reply_*` 配置说明与 `max_messages` 描述。
+
+### Removed
+
+- `self._flat_config`（构造后无人读取）与 `_cfg_get` 里逐字复制的那份摊平逻辑。
+- `_build_context_block`、`_top_speakers`（无调用方）。
+- `MessageRecord` 的 4 个只写不读字段（`reply_to_sender_id` /
+  `mentioned_user_ids` / `is_at_bot` / `is_at_all`）：主语指向信息改为
+  需要时由 `_extract_addressee_info` 现算，不再挂在每条消息上。
+- `mixins/emotion_bridge.py` 的 `_logging`、`output_step/reply.py` 的 `Any` 导入。
+- **4 个 `_legacy_*` 模板方法（约 140 行）**：旧内置默认模板改为 sha1 摘要
+  识别（`main.py` 顶部两份 frozenset），配置命中旧默认值仍会自动升级到当前默认值。
+
+### Fixed
+
+- `_save_if_needed` 里"先清摘要再淘汰"的顺序问题：先清摘要会把"两天前还更新过
+  摘要"的群误判成从无活动而整条删掉；现在淘汰在前。
+- **`persist_enabled=false` 时状态淘汰被整个跳过**：`_stale_history_prune_loop`
+  原先在该配置下直接 `continue`，导致关闭持久化的实例内存状态同样无界增长；
+  现在淘汰先于持久化闸门执行。
+- **状态文件能解析但不是 JSON 对象时插件加载失败**（如文件内容是 `[]`）：补充入口
+  形状校验，改为从空状态开始并记 warning。
+
+### Tests
+
+- 185 → 237 个用例；测试假对象（配置 / 事件 / provider / emotion star）
+  抽到 `tests/_fakes.py`，两个测试文件不再各存一份。
+
 ## v0.8.25 - 2026-08-14
 
 ### Fixed

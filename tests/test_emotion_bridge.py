@@ -42,113 +42,12 @@ from main import SocialContextPlugin  # noqa: E402
 from mixins.emotion_bridge import EMOTION_STAR_NAME  # noqa: E402
 
 
-class _Cfg(dict):
-    def get(self, key, default=None):  # noqa: ANN001, ANN201 - 测试假对象
-        return super().get(key, default)
-
-
-class _FakeTextPart:
-    """v0.10.0+ ESM.to_text_part 返的 TextPart 简化替身。"""
-
-    def __init__(self, text: str = "") -> None:
-        self.text = text
-        self._no_save = True  # 模拟 mark_as_temp()
-
-    def mark_as_temp(self):
-        self._no_save = True
-        return self
-
-
-class _FakeEmotionStar:
-    """Spy 形态的 emotion_state_machine star (ESM v0.10.0+)。
-
-    v0.8.12+：方法列表从 3 个简化到 2 个（observe_text + to_text_part）。
-    build_prompt_block 保留作降级路径。
-
-    v0.8.14+：新增 get_bot_energy（精力查询），供 social_context 硬门槛
-    + 软注入使用。
-    """
-
-    def __init__(
-        self,
-        *,
-        scope_for_event: str = "g-1",
-        prompt_block: str = "## Bot Emotion State\nhappy",
-        text_part: _FakeTextPart | None = None,
-        raise_on_observe: bool = False,
-        raise_on_block: bool = False,
-        raise_on_text_part: bool = False,
-        bot_energy: float | None = 1.0,
-        raise_on_get_bot_energy: bool = False,
-    ) -> None:
-        self._scope_for_event = scope_for_event
-        self._prompt_block = prompt_block
-        self._text_part = text_part or _FakeTextPart(text=prompt_block)
-        self._raise_on_observe = raise_on_observe
-        self._raise_on_block = raise_on_block
-        self._raise_on_text_part = raise_on_text_part
-        self._bot_energy = bot_energy
-        self._raise_on_get_bot_energy = raise_on_get_bot_energy
-        self.observe_calls: list[dict] = []
-        self.block_calls: list[dict] = []
-        self.text_part_calls: list[dict] = []
-        self.get_bot_energy_calls: list[dict] = []
-
-    async def get_scope(self, event: object) -> str:
-        # v0.8.16+：ESM v0.10.3 把 get_scope 改 async。
-        # fake 同步实现 → 异步实现，以匹配生产代码。
-        return self._scope_for_event
-
-    def observe_text(self, *, scope, text, user_id, mentioned):  # noqa: ANN001
-        self.observe_calls.append(
-            {"scope": scope, "text": text, "user_id": user_id, "mentioned": mentioned}
-        )
-        if self._raise_on_observe:
-            raise RuntimeError("emotion observe_text 故意失败")
-        return SimpleNamespace(label="calm")
-
-    def build_prompt_block(self, *, scope, user_id=""):  # noqa: ANN001
-        """降级路径：返 str 字符串。"""
-        self.block_calls.append({"scope": scope, "user_id": user_id})
-        if self._raise_on_block:
-            raise RuntimeError("emotion build_prompt_block 故意失败")
-        return self._prompt_block
-
-    def to_text_part(self, scope: str, user_id: str = "") -> _FakeTextPart:
-        """v0.10.0+ 主路径：返 TextPart。"""
-        self.text_part_calls.append({"scope": scope, "user_id": user_id})
-        if self._raise_on_text_part:
-            raise RuntimeError("emotion to_text_part 故意失败")
-        return self._text_part
-
-    def get_bot_energy(self, scope: str | None = None) -> float:
-        """v0.10.0+ 精力查询。返 [0.0, 1.0]；None 表示关闭。"""
-        self.get_bot_energy_calls.append({"scope": scope})
-        if self._raise_on_get_bot_energy:
-            raise RuntimeError("emotion get_bot_energy 故意失败")
-        if self._bot_energy is None:
-            raise AttributeError("energy disabled in this fake")
-        return self._bot_energy
-
-
-def _make_plugin(config: dict | None = None) -> SocialContextPlugin:
-    plugin = SocialContextPlugin.__new__(SocialContextPlugin)
-    plugin.config = _Cfg(config or {})
-    plugin.groups = {}
-    plugin.users = {}
-    plugin.context = SimpleNamespace()  # 默认：get_registered_star 缺失
-    # v0.8.12+：_emotion_signal_last / _emotion_disabled_warn_last 已迁回 ESM
-    return plugin
-
-
-def _attach_emotion(plugin: SocialContextPlugin, star: _FakeEmotionStar) -> None:
-    """把 fake star 挂到 plugin.context.get_registered_star。"""
-
-    def _lookup(name: str):
-        assert name == EMOTION_STAR_NAME
-        return star
-
-    plugin.context.get_registered_star = _lookup  # type: ignore[attr-defined]
+from tests._fakes import (  # noqa: E402
+    _FakeEmotionStar,
+    _FakeTextPart,
+    _attach_emotion,
+    _make_plugin,
+)
 
 
 class EmotionBridgeTests(unittest.TestCase):

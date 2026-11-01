@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
+import tempfile
 import time
 import unittest
-from unittest import mock
 from collections import deque
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 _PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 _ASTRBOT_APP_CANDIDATES = [
@@ -22,93 +26,31 @@ for _candidate in _ASTRBOT_APP_CANDIDATES:
         break
 sys.path.insert(0, str(_PLUGIN_ROOT))
 
-from main import GroupContext, MessageRecord, SocialContextPlugin, UserContext  # noqa: E402
+import main as main_module  # noqa: E402
+from main import (  # noqa: E402
+    GroupContext,
+    MessageRecord,
+    PokeRecord,
+    SocialContextPlugin,
+    UserContext,
+)
 
 
-class _Cfg(dict):
-    def get(self, key, default=None):  # noqa: ANN001, ANN201 - 测试假对象
-        return super().get(key, default)
-
-
-class _Event:
-    def __init__(
-        self,
-        sender_name: str = "alice",
-        sender_id: str = "10001",
-        group_id: str = "group-1",
-        message: str = "当前消息",
-        extras: dict[str, object] | None = None,
-        raw_message: dict[str, object] | None = None,
-        message_type: str = "group",
-        self_id: str = "99999",
-        message_id: str = "",
-        chain: list | None = None,
-    ) -> None:
-        self.sender_name = sender_name
-        self.sender_id = sender_id
-        self.group_id = group_id
-        self.unified_msg_origin = group_id
-        self.message_str = message
-        self.extras = extras or {}
-        self.message_type = message_type
-        self.stopped = False
-        self.result = None
-        self._self_id = self_id
-        self._chain = chain if chain is not None else None
-        self.message_obj = type(
-            "MessageObj",
-            (),
-            {
-                "raw_message": raw_message or {},
-                "message_id": message_id,
-                "message": self._chain,
-            },
-        )()
-
-    def get_sender_name(self) -> str:
-        return self.sender_name
-
-    def get_sender_id(self) -> str:
-        return self.sender_id
-
-    def get_group_id(self) -> str:
-        return self.group_id
-
-    def get_message_type(self) -> str:
-        return self.message_type
-
-    def get_session_id(self) -> str:
-        return self.unified_msg_origin
-
-    def get_self_id(self) -> str:
-        return self._self_id
-
-    def is_private_chat(self) -> bool:
-        return self.message_type == "private"
-
-    def get_extra(self, key: str, default=None):  # noqa: ANN001, ANN201 - 测试假对象
-        return self.extras.get(key, default)
-
-    def plain_result(self, text: str) -> str:
-        return text
-
-    def set_result(self, result: object) -> None:
-        self.result = result
-
-    def stop_event(self) -> None:
-        self.stopped = True
-
-
-# v0.5.3+：构造带 qq 字段的鸭子类型 chain 元素（用 SimpleNamespace 避免依赖真实 At）
-from types import SimpleNamespace as _SimpleNamespace  # noqa: E402
-
-
-def _at(qq: str):
-    return _SimpleNamespace(qq=qq)
+from tests._fakes import (  # noqa: E402
+    _Cfg,
+    _Event,
+    _FakeEmotionStar,
+    _FakeProvider,
+    _at,
+    _attach_emotion,
+    _context_with_provider,
+    _make_plugin,
+    _real_plugin,
+)
 
 
 def _reply(id_: str):
-    return _SimpleNamespace(id=id_)
+    return SimpleNamespace(id=id_)
 
 
 class PluginHelperTests(unittest.TestCase):
@@ -407,11 +349,11 @@ class PluginHelperTests(unittest.TestCase):
         self.assertIn("alice：bob 你今天来吗", block)
         self.assertIn("第二人称", block)
 
-    def test_judge_block_upgrades_legacy_default_template(self) -> None:
-        """旧配置文件里保存的内置默认 judge 模板，应自动升级到当前默认模板。"""
-        self.plugin.config = _Cfg({
-            "judge_prompt_template": self.plugin._legacy_judge_prompt_template_minimal(),
-        })
+    def test_judge_block_upgrades_registered_legacy_digest(self) -> None:
+        """命中旧内置模板摘要的配置，自动升级到当前默认模板。"""
+        legacy = "## 旧判断参考\n- 最近{window_seconds}秒：{vibe}"
+        digest = main_module._template_digest(legacy)
+        self.plugin.config = _Cfg({"judge_prompt_template": legacy})
         group = GroupContext(
             messages=deque([
                 MessageRecord(sender_id="10001", sender_name="alice", content="bob 你今天来吗", timestamp=9999999999.0),
@@ -420,25 +362,30 @@ class PluginHelperTests(unittest.TestCase):
         self.plugin.groups["group-1"] = group
         self.plugin.users["10001"] = UserContext(user_id="10001")
         event = _Event(message="bob 你今天来吗")
-        block = self.plugin.build_judge_prompt_block("group-1", event, max_age=9999999999)  # type: ignore[arg-type]
+        with mock.patch.object(main_module, "_LEGACY_JUDGE_PROMPT_DIGESTS", frozenset({digest})):
+            block = self.plugin.build_judge_prompt_block("group-1", event, max_age=9999999999)  # type: ignore[arg-type]
         self.assertIn("最近对话原文", block)
         self.assertIn("第二人称", block)
 
-    def test_decision_prompt_upgrades_legacy_default_template(self) -> None:
-        """旧配置文件里保存的内置默认决策模板，应自动升级到当前默认模板。"""
-        self.plugin.config = _Cfg({
-            "judge_decision_prompt": self.plugin._legacy_judge_decision_prompt_minimal(),
-        })
+    def test_custom_template_survives_upgrade(self) -> None:
+        """自定义模板不该被摘要升级逻辑吃掉。"""
+        self.plugin.config = _Cfg({"judge_decision_prompt": "我的自定义模板 {context_block}"})
         template = self.plugin._config_template_or_default(
             "judge_decision_prompt",
             self.plugin._default_judge_decision_prompt(),
-            legacy_defaults=(
-                self.plugin._legacy_judge_decision_prompt(),
-                self.plugin._legacy_judge_decision_prompt_minimal(),
-            ),
+            legacy_digests=main_module._LEGACY_JUDGE_DECISION_DIGESTS,
         )
-        self.assertIn("主语判定", template)
-        self.assertIn("第二人称", template)
+        self.assertEqual("我的自定义模板 {context_block}", template)
+
+    def test_legacy_digest_sets_are_lowercase_sha1(self) -> None:
+        """摘要表是本机制唯一的数据源，格式错了升级会静默失效。"""
+        for digests in (
+            main_module._LEGACY_JUDGE_PROMPT_DIGESTS,
+            main_module._LEGACY_JUDGE_DECISION_DIGESTS,
+        ):
+            self.assertTrue(digests)
+            for digest in digests:
+                self.assertRegex(digest, r"^[0-9a-f]{40}$")
 
     def test_conversation_opening_high_when_at_bot(self) -> None:
         """v0.5.3+：@ bot 不含问号也该是 high（明确点名）"""
@@ -480,29 +427,25 @@ class PluginHelperTests(unittest.TestCase):
         self.assertIn("明确 @ bot", block)
         self.assertIn("is_at_bot=True", block)
 
-    def test_group_to_json_omits_addressee_fields(self) -> None:
-        """v0.5.3+：主语指向字段不落盘"""
+    def test_group_to_json_omits_privacy_fields(self) -> None:
+        """消息原文与 message_id 不落盘"""
         group = GroupContext(
             messages=deque([
                 MessageRecord(
                     sender_id="10001",
                     sender_name="alice",
-                    content="x",
+                    content="secret body",
                     timestamp=1.0,
                     is_bot=False,
-                    reply_to_sender_id="99999",
-                    mentioned_user_ids=("10002",),
-                    is_at_bot=True,
-                    is_at_all=False,
+                    message_id="m-1",
                 )
             ])
         )
         data = self.plugin._group_to_json(group)
         m = data["messages"][0]
-        self.assertNotIn("reply_to_sender_id", m)
-        self.assertNotIn("mentioned_user_ids", m)
-        self.assertNotIn("is_at_bot", m)
-        self.assertNotIn("is_at_all", m)
+        self.assertNotIn("content", m)
+        self.assertNotIn("message_id", m)
+        self.assertEqual("10001", m["sender_id"])
 
     def test_addressee_label_variants(self) -> None:
         """v0.5.3+：标签生成覆盖 5 种典型场景"""
@@ -757,25 +700,14 @@ class PluginHelperTests(unittest.TestCase):
     def test_call_compress_llm_success(self) -> None:
         """v0.8.10+：provider 返回有效内容时直接返回，且参数结构为
         prompt=instruction / extra_user_content_parts=parts。"""
-        captured: dict = {}
-
-        class _Resp:
-            completion_text = "这是压缩后的摘要"
-
-        class _Prov:
-            async def text_chat(self, **kwargs):
-                captured.update(kwargs)
-                return _Resp()
-
-        class _Ctx:
-            def get_provider_by_id(self, pid):
-                return _Prov()
+        provider = _FakeProvider(completion_text="这是压缩后的摘要")
 
         self.plugin.config = _Cfg({"judge_provider_id": "ok"})
-        self.plugin.context = _Ctx()
+        self.plugin.context = _context_with_provider(provider)
         result = asyncio.run(
             self.plugin._call_compress_llm("static instruction", ["p1", "p2"], 1.0)
         )
+        captured = provider.calls[0]
         self.assertEqual(result, "这是压缩后的摘要")
         # 新参数结构
         self.assertEqual("static instruction", captured.get("prompt"))
@@ -784,20 +716,9 @@ class PluginHelperTests(unittest.TestCase):
 
     def test_call_compress_llm_timeout(self) -> None:
         """v0.8.10+：超时返 None（不抛）"""
-        import asyncio as _aio
-
-        class _SlowProv:
-            async def text_chat(self, **kwargs):
-                await _aio.sleep(5)
-                return None
-
-        class _Ctx:
-            def get_provider_by_id(self, pid):
-                return _SlowProv()
-
         self.plugin.config = _Cfg({"judge_provider_id": "ok"})
-        self.plugin.context = _Ctx()
-        result = _aio.run(
+        self.plugin.context = _context_with_provider(_FakeProvider(completion_text="x", delay=5))
+        result = asyncio.run(
             self.plugin._call_compress_llm("inst", ["p1"], 0.1)
         )
         self.assertIsNone(result)
@@ -845,14 +766,8 @@ class PluginHelperTests(unittest.TestCase):
     def test_compress_tier2_failure_preserves_old(self) -> None:
         """v0.6.1+：LLM 返 None 时不更新 updated，下次还能再试"""
         # 直接走 async 方法
-        class _Prov:
-            async def text_chat(self, **kwargs):
-                return None
-        class _Ctx:
-            def get_provider_by_id(self, pid):
-                return _Prov()
         self.plugin.config = _Cfg({"judge_provider_id": "ok"})
-        self.plugin.context = _Ctx()
+        self.plugin.context = _context_with_provider(_FakeProvider(replies=[None]))
         self.plugin.groups["group-1"] = GroupContext(
             history_summary="旧摘要",
             history_summary_updated=1.0,  # 远古
@@ -873,16 +788,10 @@ class PluginHelperTests(unittest.TestCase):
 
     def test_compress_tier2_success_updates(self) -> None:
         """v0.6.1+：LLM 返有效内容时更新 summary + updated"""
-        class _Resp:
-            completion_text = "新的压缩摘要：alice 问了 X 问题"
-        class _Prov:
-            async def text_chat(self, **kwargs):
-                return _Resp()
-        class _Ctx:
-            def get_provider_by_id(self, pid):
-                return _Prov()
         self.plugin.config = _Cfg({"judge_provider_id": "ok"})
-        self.plugin.context = _Ctx()
+        self.plugin.context = _context_with_provider(
+            _FakeProvider(completion_text="新的压缩摘要：alice 问了 X 问题")
+        )
         # tier 按 (now - ts) 相对年龄分档，tier2 默认窗口 180~1800s。
         # 用相对 now 构造消息，并把 updated 设到 interval 外才会触发压缩。
         now = time.time()
@@ -1238,6 +1147,36 @@ class PluginHelperTests(unittest.TestCase):
         self.assertEqual(g.history_summary, "应保留")
         self.assertEqual(g.history_daily_summary, "也应保留")
 
+    def test_stale_prune_loop_evicts_state_when_persist_disabled(self) -> None:
+        """淘汰只关乎内存：持久化关掉也要清闲置群/用户，否则字典无限增长。"""
+        import asyncio as _aio
+        now = __import__("time").time()
+        self.plugin.config = _Cfg({
+            "persist_enabled": False,
+            "state_group_ttl": 60,
+            "state_user_ttl": 60,
+        })
+        self.plugin.groups["idle"] = GroupContext(
+            messages=deque([MessageRecord("u1", "alice", "x", now - 600, False)])
+        )
+        self.plugin.users["idle-user"] = UserContext(user_id="idle-user", last_message_time=now - 600)
+
+        sleep_calls = {"n": 0}
+
+        async def _mock_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                raise _aio.CancelledError()
+
+        with mock.patch.object(_aio, "sleep", _mock_sleep):
+            try:
+                _aio.run(self.plugin._stale_history_prune_loop())
+            except _aio.CancelledError:
+                pass
+
+        self.assertNotIn("idle", self.plugin.groups)
+        self.assertNotIn("idle-user", self.plugin.users)
+
     def test_stale_prune_loop_force_saves_on_actual_clear(self) -> None:
         """v0.6.4+：真清掉东西时 _save_if_needed(force=True) 会被调用"""
         import asyncio as _aio
@@ -1329,6 +1268,8 @@ class PluginHelperTests(unittest.TestCase):
         self.assertTrue(self.plugin._is_group_temporary_private(event))  # type: ignore[arg-type]
 
     def test_group_temp_private_guard_blocks_silently_by_default(self) -> None:
+        # 来源群在白名单里才会被接管
+        self.plugin.config = _Cfg({"group_whitelist": ["42"]})
         event = _Event(
             group_id="",
             message_type="private",
@@ -1342,7 +1283,7 @@ class PluginHelperTests(unittest.TestCase):
         self.assertIsNone(event.result)
 
     def test_group_temp_private_guard_can_send_custom_notice(self) -> None:
-        self.plugin.config = _Cfg({"block_group_temp_private_notice": "请回群里说"})
+        self.plugin.config = _Cfg({"block_group_temp_private_notice": "请回群里说", "group_whitelist": ["42"]})
         event = _Event(
             group_id="",
             message_type="private",
@@ -1354,6 +1295,20 @@ class PluginHelperTests(unittest.TestCase):
 
         self.assertTrue(event.stopped)
         self.assertEqual("请回群里说", event.result)
+
+    def test_group_temp_private_guard_ignores_unlisted_source_group(self) -> None:
+        """来源群不在白名单里 → 本插件不管这个临时会话。"""
+        event = _Event(
+            group_id="",
+            message_type="private",
+            raw_message={"message_type": "private", "sub_type": "group", "sender": {"group_id": 42}},
+        )
+        event.unified_msg_origin = "private:10001"
+
+        asyncio.run(self.plugin.block_group_temp_private(event))  # type: ignore[arg-type]
+
+        self.assertFalse(event.stopped)
+        self.assertIsNone(event.result)
 
     def test_group_temp_private_guard_allows_friend_private(self) -> None:
         event = _Event(
@@ -1449,7 +1404,6 @@ class PluginHelperTests(unittest.TestCase):
         self.plugin.groups["group-1"] = GroupContext()
         # 塞一条消息让 build_reply_prompt_block 产出非空 block
         group = self.plugin.groups["group-1"]
-        from types import SimpleNamespace
         from main import MessageRecord
         group.messages.append(
             MessageRecord(
@@ -1495,22 +1449,12 @@ class JudgeLlmCallTests(unittest.TestCase):
 
     def test_judge_call_uses_extra_user_content_parts(self) -> None:
         """v0.8.9+：judge prompt 走 extra_user_content_parts 而不是 prompt=。"""
-        captured: dict = {}
-
-        class _Resp:
-            completion_text = '{"should_reply": true, "confidence": 0.9, "reasoning": "ok"}'
-
-        class _Prov:
-            async def text_chat(self, **kwargs):
-                captured.update(kwargs)
-                return _Resp()
-
-        class _Ctx:
-            def get_provider_by_id(self, pid):
-                return _Prov()
+        provider = _FakeProvider(
+            completion_text='{"should_reply": true, "confidence": 0.9, "reasoning": "ok"}'
+        )
 
         self.plugin.config = _Cfg({"judge_provider_id": "ok"})
-        self.plugin.context = _Ctx()
+        self.plugin.context = _context_with_provider(provider)
         self.plugin.context.conversation_manager = _FakeConversationManager(
             conversation=_FakeConversation(persona_id=None)
         )
@@ -1518,6 +1462,7 @@ class JudgeLlmCallTests(unittest.TestCase):
         self.plugin.groups["group-1"] = GroupContext()
 
         result = asyncio.run(self.plugin._judge_should_reply(self._make_event(), "group-1"))
+        captured = provider.calls[0]
 
         # v0.8.22+：decision prompt 必须走 prompt=，否则 OpenAI provider 会忽略
         # extra_user_content_parts，导致 judge 拿不到上下文。
@@ -1533,31 +1478,15 @@ class JudgeLlmCallTests(unittest.TestCase):
 
     def test_judge_call_retry_appends_retry_note_to_text_part(self) -> None:
         """v0.8.9+：retry 时 retry_note 追加到 TextPart.text，不再污染 prompt=。"""
-        call_count = {"n": 0}
-        captured_parts: list = []
-        captured_prompts: list = []
-
-        class _Prov:
-            async def text_chat(self, **kwargs):
-                call_count["n"] += 1
-                captured_parts.append(list(kwargs.get("extra_user_content_parts") or []))
-                captured_prompts.append(kwargs.get("prompt", ""))
-                if call_count["n"] == 1:
-                    # 第一次返回非法 JSON
-                    class _Bad:
-                        completion_text = "这不是 JSON"
-                    return _Bad()
-                # 第二次返回合法 JSON
-                class _Ok:
-                    completion_text = '{"should_reply": false, "confidence": 0.3, "reasoning": "skip"}'
-                return _Ok()
-
-        class _Ctx:
-            def get_provider_by_id(self, pid):
-                return _Prov()
+        provider = _FakeProvider(
+            replies=[
+                "这不是 JSON",
+                '{"should_reply": false, "confidence": 0.3, "reasoning": "skip"}',
+            ]
+        )
 
         self.plugin.config = _Cfg({"judge_provider_id": "ok", "judge_max_retries": 1})
-        self.plugin.context = _Ctx()
+        self.plugin.context = _context_with_provider(provider)
         self.plugin.context.conversation_manager = _FakeConversationManager(
             conversation=_FakeConversation(persona_id=None)
         )
@@ -1566,8 +1495,10 @@ class JudgeLlmCallTests(unittest.TestCase):
 
         result = asyncio.run(self.plugin._judge_should_reply(self._make_event(), "group-1"))
 
+        captured_parts = [list(call.get("extra_user_content_parts") or []) for call in provider.calls]
+        captured_prompts = [call.get("prompt", "") for call in provider.calls]
         # 重试 1 次，共 2 次调用
-        self.assertEqual(call_count["n"], 2)
+        self.assertEqual(len(provider.calls), 2)
         # 无人格、无 emotion 时，extra_user_content_parts 保持为空
         self.assertEqual(len(captured_parts), 2)
         for parts in captured_parts:
@@ -1583,26 +1514,16 @@ class JudgeLlmCallTests(unittest.TestCase):
     def test_judge_call_includes_emotion_text_part_when_esm_available(self) -> None:
         """v0.8.12+ 回归：ESM.to_text_part 可用时 emotion TextPart 必须与
         decision prompt 一起进入 extra_user_content_parts，不抛 NameError。"""
-        captured: dict = {}
-
-        class _Resp:
-            completion_text = '{"should_reply": false, "confidence": 0.2, "reasoning": "skip"}'
-
-        class _Prov:
-            async def text_chat(self, **kwargs):
-                captured.update(kwargs)
-                return _Resp()
-
-        class _Ctx:
-            def get_provider_by_id(self, pid):
-                return _Prov()
+        provider = _FakeProvider(
+            completion_text='{"should_reply": false, "confidence": 0.2, "reasoning": "skip"}'
+        )
 
         class _Emo:
             def to_text_part(self, scope, user_id):
                 return type("Part", (), {"text": "emotion-state"})()
 
         self.plugin.config = _Cfg({"judge_provider_id": "ok"})
-        self.plugin.context = _Ctx()
+        self.plugin.context = _context_with_provider(provider)
         self.plugin.context.conversation_manager = _FakeConversationManager(
             conversation=_FakeConversation(persona_id=None)
         )
@@ -1612,6 +1533,7 @@ class JudgeLlmCallTests(unittest.TestCase):
 
         result = asyncio.run(self.plugin._judge_should_reply(self._make_event(), "group-1"))
 
+        captured = provider.calls[0]
         parts = captured.get("extra_user_content_parts")
         self.assertIsNotNone(parts)
         self.assertEqual(1, len(parts))
@@ -1785,7 +1707,6 @@ class JudgePersonaTests(unittest.TestCase):
 
     def test_resolve_judge_persona_warns_when_no_persona_manager(self) -> None:
         """v0.8.11+：context 缺 conversation_manager / persona_manager 时打 warning。"""
-        import logging
 
         # context 只有空 stub，没有 manager
         class _EmptyCtx:
@@ -1808,7 +1729,6 @@ class JudgePersonaTests(unittest.TestCase):
 
     def test_resolve_judge_persona_warns_when_default_has_no_prompt(self) -> None:
         """v0.8.11+：get_default_persona_v3 返的 dict 里没 'prompt' 时打 warning。"""
-        import logging
 
         class _EmptyDefaultMgr:
             async def get_default_persona_v3(self, umo: str = ""):
@@ -1831,7 +1751,6 @@ class JudgePersonaTests(unittest.TestCase):
 
     def test_resolve_judge_persona_silent_when_feature_disabled(self) -> None:
         """v0.8.11+：judge_persona_aware_enabled=False 时不 warn（用户主动关，不是错）。"""
-        import logging
 
         # 设个会失败的 manager；功能关闭后应该走早返不 warn
         self.plugin.config = _Cfg({"judge_persona_aware_enabled": False})
@@ -1850,7 +1769,6 @@ class JudgePersonaTests(unittest.TestCase):
 
     def test_resolve_judge_persona_silent_on_cache_hit(self) -> None:
         """v0.8.11+：缓存命中时不再 warn（第一次的 warn 已经写过了）。"""
-        import logging
         import time as _t
 
         # 预填一个失败的缓存
@@ -1868,7 +1786,6 @@ class JudgePersonaTests(unittest.TestCase):
 
     def test_resolve_judge_persona_silent_when_persona_found(self) -> None:
         """v0.8.11+：正常路径下不应该 warn。"""
-        import logging
 
         persona = _FakePersona(system_prompt="我是橘雪莉。")
         self.plugin.context = _FakeContext(
@@ -1882,14 +1799,6 @@ class JudgePersonaTests(unittest.TestCase):
             pid, sp = asyncio.run(self.plugin._resolve_judge_persona(ev))
         self.assertEqual("shirley", pid)
         self.assertEqual("我是橘雪莉。", sp)
-
-
-# _make_plugin / _FakeEmotionStar / _attach_emotion 定义在 test_emotion_bridge.py
-from tests.test_emotion_bridge import (  # type: ignore[attr-defined]
-    _FakeEmotionStar,
-    _attach_emotion,
-    _make_plugin,
-)
 
 
 class TriggeredReplyHintTests(unittest.TestCase):
@@ -1980,9 +1889,7 @@ class TriggeredReplyHintTests(unittest.TestCase):
 
     def test_bot_energy_from_esm_substituted_into_hint(self) -> None:
         """挂载 fake ESM，{bot_energy} 应取自 ESM.get_bot_energy。"""
-        # 复用 test_emotion_bridge 的 _FakeEmotionStar
-        from tests.test_emotion_bridge import _FakeEmotionStar, _attach_emotion
-
+        # 复用共享的 _FakeEmotionStar
         star = _FakeEmotionStar(bot_energy=0.42)
         _attach_emotion(self.plugin, star)
 
@@ -2009,8 +1916,6 @@ class TriggeredReplyHintTests(unittest.TestCase):
 
     def test_bot_energy_falls_back_to_one_when_esm_raises(self) -> None:
         """ESM.get_bot_energy 抛异常 → {bot_energy} 默认 1.00（不传播异常）。"""
-        from tests.test_emotion_bridge import _FakeEmotionStar, _attach_emotion
-
         star = _FakeEmotionStar(raise_on_get_bot_energy=True)
         _attach_emotion(self.plugin, star)
 
@@ -2025,8 +1930,6 @@ class TriggeredReplyHintTests(unittest.TestCase):
 
     def test_bot_energy_falls_back_when_inject_disabled(self) -> None:
         """judge_energy_inject_enabled=false → {bot_energy} 不查 ESM，直接 1.00。"""
-        from tests.test_emotion_bridge import _FakeEmotionStar, _attach_emotion
-
         star = _FakeEmotionStar(bot_energy=0.10)  # 即便 ESM 有低能量也不该查
         _attach_emotion(self.plugin, star)
         self.plugin.config["judge_energy_inject_enabled"] = False
@@ -2186,6 +2089,274 @@ class ReplyStepTests(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertEqual(pushed, 0)
+
+
+
+class PersistenceRoundTripTests(unittest.TestCase):
+    """v0.9.0+：持久化真实往返测试。
+
+    在此之前所有测试都用 __new__ 绕过 __init__，结果 _load_state 一行未执行、
+    _save_if_needed 的 JSON 组装与写盘也从未被验证（调用全在 mkdir 处抛
+    AttributeError 被 except 吞掉）。这里用真 __init__ + 临时 state_path 覆盖
+    「写盘 → 读回」的完整路径。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        # 故意放在不存在的子目录里，顺便验证写盘会自己建父目录
+        self.state_path = Path(self._tmp.name) / "nested" / "state.json"
+
+    def _make(self, **overrides) -> SocialContextPlugin:
+        return _real_plugin(self.state_path, **overrides)
+
+    def _fill_state(self, plugin: SocialContextPlugin) -> float:
+        now = time.time()
+        today = date.today().isoformat()
+        plugin.groups["g1"] = GroupContext(
+            messages=deque(
+                [
+                    MessageRecord(
+                        sender_id="u1",
+                        sender_name="alice",
+                        content="secret body",
+                        timestamp=now,
+                        is_bot=False,
+                        message_id="42",
+                    )
+                ]
+            ),
+            pokes=deque([PokeRecord(sender_id="u1", target_id="u2", timestamp=now)]),
+            last_bot_reply_time=now - 10,
+            total_messages_today=7,
+            total_pokes_today=3,
+            autonomous_reply_count_today=1,
+            autonomous_reply_count_hour=2,
+            autonomous_reply_hour="2026-11-01T12",
+            last_judge_result={"should_reply": True},
+            last_reset_date=today,
+            history_summary="tier2 summary",
+            history_summary_updated=now,
+            history_daily_summary="tier3 summary",
+            history_daily_updated=now,
+        )
+        plugin.users["u1"] = UserContext(
+            user_id="u1",
+            message_count_today=5,
+            poke_sent_today=2,
+            familiarity=12.5,
+            role="admin",
+            last_reset_date=today,
+            last_message_time=now,
+        )
+        return now
+
+    def test_save_then_load_round_trip(self) -> None:
+        """写盘 → 读回：计数、摘要、戳一戳、用户状态都要原样回来。"""
+        plugin = self._make()
+        now = self._fill_state(plugin)
+        plugin._save_if_needed(force=True)
+
+        self.assertTrue(self.state_path.exists())
+        raw_text = self.state_path.read_text(encoding="utf-8")
+        self.assertNotIn("secret body", raw_text)  # 消息原文不落盘（隐私不变量）
+
+        restored = self._make()
+        group = restored.groups["g1"]
+        self.assertEqual(group.messages[0].sender_name, "alice")
+        self.assertEqual(group.messages[0].content, "")  # 原文被剥掉
+        self.assertEqual(group.messages[0].message_id, "")  # 内存字段不落盘
+        self.assertAlmostEqual(group.messages[0].timestamp, now)
+        self.assertEqual(group.pokes[0].target_id, "u2")
+        self.assertEqual(group.total_messages_today, 7)
+        self.assertEqual(group.total_pokes_today, 3)
+        self.assertEqual(group.autonomous_reply_count_hour, 2)
+        self.assertEqual(group.last_judge_result, {"should_reply": True})
+        self.assertEqual(group.history_summary, "tier2 summary")
+        self.assertEqual(group.history_daily_summary, "tier3 summary")
+        self.assertEqual(group.last_injected_time, 0.0)  # 注入节流不跨进程
+
+        user = restored.users["u1"]
+        self.assertEqual(user.message_count_today, 5)
+        self.assertEqual(user.poke_sent_today, 2)
+        self.assertAlmostEqual(user.familiarity, 12.5)
+        self.assertEqual(user.role, "admin")
+
+    def test_save_creates_parent_directory(self) -> None:
+        plugin = self._make()
+        self.assertFalse(self.state_path.parent.exists())
+        plugin._save_if_needed(force=True)
+        self.assertTrue(self.state_path.is_file())
+        self.assertIn("groups", json.loads(self.state_path.read_text(encoding="utf-8")))
+
+    def test_persist_disabled_never_writes(self) -> None:
+        plugin = self._make(persist_enabled=False)
+        self._fill_state(plugin)
+        plugin._save_if_needed(force=True)
+        self.assertFalse(self.state_path.exists())
+
+    def test_load_corrupt_json_is_ignored(self) -> None:
+        """坏文件不能炸掉插件，也不能留下半份状态。"""
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text("{not json", encoding="utf-8")
+        plugin = self._make()
+        self.assertEqual(plugin.groups, {})
+        self.assertEqual(plugin.users, {})
+
+    def _save_then_edit(self, edit) -> None:
+        """用真实写盘结果做底，再篡改一处，避免测试自己手抄存储格式。"""
+        plugin = self._make()
+        self._fill_state(plugin)
+        plugin._save_if_needed(force=True)
+        raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+        edit(raw)
+        self.state_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    def test_load_non_object_json_is_ignored(self) -> None:
+        """能解析但不是对象的 JSON（如 []）不能把插件初始化炸掉。"""
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text("[]", encoding="utf-8")
+
+        plugin = self._make()
+
+        self.assertEqual(plugin.groups, {})
+        self.assertEqual(plugin.users, {})
+
+    def test_load_skips_bad_entry_and_keeps_rest(self) -> None:
+        """一条坏记录只丢它自己，同段里后面的条目照常载入。"""
+
+        def _edit(raw: dict) -> None:
+            raw["groups"]["bad"] = ["这不是 dict"]
+            raw["users"]["bad-user"] = "坏的"
+
+        self._save_then_edit(_edit)
+        plugin = self._make()
+
+        self.assertEqual(sorted(plugin.groups), ["g1"])
+        self.assertEqual(plugin.groups["g1"].total_messages_today, 7)
+        self.assertEqual(sorted(plugin.users), ["u1"])
+        self.assertEqual(plugin.users["u1"].message_count_today, 5)
+
+    def test_load_ignores_unknown_fields(self) -> None:
+        """旧版本写下的多余字段要能忽略，而不是让整份状态读不出来。"""
+
+        def _edit(raw: dict) -> None:
+            raw["groups"]["g1"]["messages"][0]["reply_to_sender_id"] = "99999"
+            raw["users"]["u1"]["legacy_field"] = 1
+
+        self._save_then_edit(_edit)
+        plugin = self._make()
+
+        self.assertEqual(plugin.groups["g1"].messages[0].sender_name, "alice")
+        self.assertEqual(plugin.groups["g1"].messages[0].content, "")
+        self.assertEqual(plugin.users["u1"].user_id, "u1")
+
+
+
+class StateEvictionTests(unittest.TestCase):
+    """v0.9.0+：群/用户状态淘汰，以及「读」不再顺手创建状态。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_path = Path(self._tmp.name) / "state.json"
+        self.plugin = _real_plugin(self.state_path)
+        self.now = time.time()
+
+    def test_users_pruned_by_ttl(self) -> None:
+        old = UserContext(user_id="old", last_message_time=self.now - 8 * 86400)
+        fresh = UserContext(user_id="fresh", last_message_time=self.now - 60)
+        self.plugin.users["old"] = old
+        self.plugin.users["fresh"] = fresh
+
+        removed = self.plugin._prune_state(self.now)
+
+        self.assertEqual(removed, 1)
+        self.assertNotIn("old", self.plugin.users)
+        self.assertIn("fresh", self.plugin.users)
+
+    def test_users_with_poke_activity_are_kept(self) -> None:
+        self.plugin.users["poker"] = UserContext(
+            user_id="poker", last_message_time=0.0, last_poke_time=self.now - 60
+        )
+        self.plugin._prune_state(self.now)
+        self.assertIn("poker", self.plugin.users)
+
+    def test_users_capped_by_last_activity(self) -> None:
+        capped = _real_plugin(self.state_path, state_user_max=3)
+        for i in range(5):
+            capped.users[f"u{i}"] = UserContext(
+                user_id=f"u{i}", last_message_time=self.now - i
+            )
+        removed = capped._prune_state(self.now)
+        self.assertEqual(removed, 2)
+        self.assertEqual(set(capped.users), {"u0", "u1", "u2"})
+
+    def test_groups_pruned_when_idle(self) -> None:
+        self.plugin.groups["idle"] = GroupContext(last_bot_reply_time=self.now - 8 * 86400)
+        active = GroupContext()
+        active.messages.append(
+            MessageRecord(sender_id="u1", sender_name="alice", content="x", timestamp=self.now - 5)
+        )
+        self.plugin.groups["active"] = active
+
+        removed = self.plugin._prune_state(self.now)
+
+        self.assertEqual(removed, 1)
+        self.assertIn("active", self.plugin.groups)
+        self.assertNotIn("idle", self.plugin.groups)
+
+    def test_group_with_fresh_summary_is_kept(self) -> None:
+        self.plugin.groups["g"] = GroupContext(
+            history_daily_summary="day summary",
+            history_daily_updated=self.now - 3600,
+        )
+        self.plugin._prune_state(self.now)
+        self.assertIn("g", self.plugin.groups)
+
+    def test_ttl_zero_disables_pruning(self) -> None:
+        plugin = _real_plugin(self.state_path, state_user_ttl=0, state_group_ttl=0)
+        plugin.users["old"] = UserContext(user_id="old", last_message_time=1.0)
+        plugin.groups["old"] = GroupContext(last_bot_reply_time=1.0)
+        removed = plugin._prune_state(self.now)
+        self.assertEqual(removed, 0)
+        self.assertIn("old", plugin.users)
+        self.assertIn("old", plugin.groups)
+
+    def test_save_drops_stale_entries_from_disk(self) -> None:
+        """淘汰要真的落到磁盘上，而不只是内存里删掉。"""
+        self.plugin.users["old"] = UserContext(user_id="old", last_message_time=1.0)
+        self.plugin.users["fresh"] = UserContext(user_id="fresh", last_message_time=self.now)
+        self.plugin._save_if_needed(force=True)
+        payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(set(payload["users"]), {"fresh"})
+
+    def test_peek_user_does_not_create(self) -> None:
+        user = self.plugin._peek_user("stranger")
+        self.assertEqual(user.user_id, "stranger")
+        self.assertEqual(user.familiarity, 0.0)
+        self.assertNotIn("stranger", self.plugin.users)
+
+    def test_get_user_creates(self) -> None:
+        self.plugin._get_user("newbie")
+        self.assertIn("newbie", self.plugin.users)
+
+    def test_prompt_build_does_not_create_users(self) -> None:
+        self.plugin.groups["group-1"] = GroupContext(
+            messages=deque(
+                [
+                    MessageRecord(
+                        sender_id="10001",
+                        sender_name="alice",
+                        content="hi",
+                        timestamp=self.now,
+                    )
+                ]
+            )
+        )
+        event = _Event(message="hi", sender_id="77777")
+        self.plugin.build_judge_prompt_block("group-1", event, max_age=9999999999)  # type: ignore[arg-type]
+        self.assertNotIn("77777", self.plugin.users)
 
 
 if __name__ == "__main__":

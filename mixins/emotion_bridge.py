@@ -22,8 +22,6 @@ social_context 主流程不受影响。
 
 from __future__ import annotations
 
-import logging
-
 from astrbot.api import logger
 
 
@@ -205,7 +203,3 @@ class EmotionBridgeMixin:
             logger.debug(f"[social_context] get_bot_energy 失败: {exc}")
             return None
 
-
-# Re-export the logger so ``from .emotion_bridge import logger`` keeps
-# working for any external consumer that imported the symbol previously.
-_logging = logging.getLogger(__name__)

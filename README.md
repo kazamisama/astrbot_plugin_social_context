@@ -87,7 +87,7 @@
 | 配置项 | 默认 | 说明 |
 |---|---|---|
 | `judge_enabled` | `true` | 是否启用自主判断。v0.5.1+ 默认开启；不需要请关闭。 |
-| `judge_provider_id` | 空 | 判断模型提供商。留空则不会发生判断（启动时会有一次提示）。 |
+| `judge_provider_id` | 空 | 判断模型提供商：填一个 chat 类型 provider 的实例 ID。留空则不会发生判断（启动时会有一次提示）。 |
 | `judge_reply_threshold` | `0.65` | 置信度阈值：`should_reply=true` 且 `confidence` 达到该值才触发。 |
 | `judge_min_reply_interval` | `60.0` | 同一会话两次主动回复的最小间隔（秒）。 |
 | `autonomous_reply_budget_per_hour` | `3` | 每小时主动回复预算；0 = 不限制。直接 @ / 唤醒不计入。 |
@@ -229,6 +229,14 @@
 两者只辅助判断，不直接触发回复，也不会出现在默认的主回复模板里。
 
 `judge_persona_aware_enabled=true` 时，判断模型还会收到当前会话人格的 system_prompt（优先会话绑定人格，失败回落到默认人格，全失败则留空），让冷淡人格偏保守、活泼人格偏积极。`/social_context judge_last` 会显示本次使用的人格 id。
+
+#### 判断模型怎么选
+
+`judge_provider_id` 填 AstrBot 里任意 **chat 类型**的 provider（`chat_completion`）。判断模型要做的事很简单：读一段上下文，返回一个 JSON 对象。插件对缺字段有默认值（`reasoning` 缺省为空、`reply_style` 缺省 `short`、`reply_intent` 缺省 `join_topic`），只要模型能稳定吐出 JSON 就算接通。
+
+**推荐用低成本大模型。** 每条群消息都可能触发一次判断（受预算、冷却、精力三道闸门约束），prompt 里带着历史摘要和最近对话原文，用旗舰模型的成本与延迟不划算；小参数 chat 模型或低价档通常就够。模型选择比插件本身更影响主动回复像不像人，建议拿自己的群聊记录实测。
+
+**不直接支持决策模型**（Jev 的 `typesafe/jev-*`、OpenAI 的 `gpt-6-luna` 这类 Decisions API）。它们走独立的 typed decisions 协议（`POST /v1/systemone` 或 `POST /v1/decisions`，用 `state`/`input` 加 `questions` 请求 `noul` / `choice` / `score` 答案），不是 chat completions，AstrBot 也没有对应类型的 provider，所以填不进 `judge_provider_id`。要接得单独写一个 provider 适配器，把 answers 序列化成 JSON 文本交给 `text_chat`；另外决策模型不返回自由文本理由（`/social_context judge_last` 的「理由」会为空），人格与情绪注入对它也没有意义。
 
 ### 精力感知（v0.8.13+）
 

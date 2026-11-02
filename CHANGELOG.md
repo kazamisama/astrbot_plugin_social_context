@@ -32,6 +32,7 @@
   安全防护与持久化后移）；修正 emotion_bridge 组「ESM 强依赖」的过期表述；
   `reply_inject_enabled` 补注旧键 `inject_enabled` 兼容。
 - 状态文件默认路径的 README 描述改为「AstrBot 数据目录下，由 `StarTools.get_data_dir()` 解析」，与代码一致。
+- README 新增「判断模型怎么选」：推荐低成本 chat 模型；Jev / GPT-6 Luna 这类 Decisions API 不直接支持（协议不同，需要外部 provider 适配器）。
 
 ## v0.9.0 - 2026-11-01
 

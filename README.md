@@ -375,7 +375,7 @@ v0.9.0 起不再在代码里保存旧版默认模板，只保留它们的 sha1 �
 
 ## 状态与持久化
 
-- 默认路径：`data/plugin_data/astrbot_plugin_social_context/social_context_state.json`，可用 `state_path` 覆盖。
+- 默认路径：AstrBot 数据目录下的 `plugin_data/astrbot_plugin_social_context/social_context_state.json`（由 `StarTools.get_data_dir()` 解析），可用 `state_path` 覆盖。
 - 普通消息触发写盘的最小间隔是 `save_interval`（默认 60 秒）；戳一戳会强制保存；重置命令和过期淘汰也会立即保存。
 - 载入时**逐条容错**：某条群状态或用户状态解析失败只跳过那一条，其余照常载入；未知字段会被忽略（兼容旧版本文件）；整个文件读不出或不是 JSON 对象时，从空状态开始并记一条 warning。
 - 读取状态不会创建条目：构造 prompt 时用只读方式取用户状态，看到陌生人不等于把他永久写进状态文件。

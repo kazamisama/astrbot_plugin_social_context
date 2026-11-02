@@ -31,6 +31,7 @@
 - `_conf_schema.json`：分组顺序与 README 对齐（输出微调 / 群成员工具 / 情绪桥接提前，
   安全防护与持久化后移）；修正 emotion_bridge 组「ESM 强依赖」的过期表述；
   `reply_inject_enabled` 补注旧键 `inject_enabled` 兼容。
+- 状态文件默认路径的 README 描述改为「AstrBot 数据目录下，由 `StarTools.get_data_dir()` 解析」，与代码一致。
 
 ## v0.9.0 - 2026-11-01
 

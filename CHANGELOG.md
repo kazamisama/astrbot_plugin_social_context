@@ -25,8 +25,9 @@
 ### Chore
 
 - `.gitignore` 忽略 `.pytest_cache/` 与 `.ruff_cache/`。
-- `.gitattributes`：市场发布包排除 `tests/`、`todo.md` 与开发文件
+- `.gitattributes`：市场发布包排除 `tests/` 与开发文件
   （`.gitignore`、`.gitattributes` 自身）；`git clone` 仍为全量，pytest 不受影响。
+- 删除内部计划文件 `todo.md`：内容均已落地或取消，历史记录仍可从 git 取回。
 
 ## v0.9.0 - 2026-11-01
 

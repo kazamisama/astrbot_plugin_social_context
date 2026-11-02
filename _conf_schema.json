@@ -68,7 +68,7 @@
         "items": {
             "reply_inject_enabled": {
                 "description": "正式回复模型注入",
-                "hint": "高级选项。开启后在正式 LLM 回复请求前追加完整群聊观察（reply_prompt_template），默认关闭：通常 AstrBot 已提供最近对话上下文，避免重复统计占用 prompt 或让回复变得不自然。自主触发时的风格提示（triggered_reply_hint_template）不受本项影响，永远在 judge=yes 时注入。",
+                "hint": "高级选项。开启后在正式 LLM 回复请求前追加完整群聊观察（reply_prompt_template），默认关闭：通常 AstrBot 已提供最近对话上下文，避免重复统计占用 prompt 或让回复变得不自然。自主触发时的风格提示（triggered_reply_hint_template）不受本项影响，永远在 judge=yes 时注入。旧配置项 inject_enabled 仍兼容读取。",
                 "type": "bool",
                 "default": false
             },
@@ -76,7 +76,7 @@
                 "description": "同会话注入间隔（秒）",
                 "hint": "防止每条消息都重复注入状态",
                 "type": "float",
-                "default": 20.0
+                "default": 20
             },
             "reply_prompt_template": {
                 "description": "群聊观察注入模板（v0.5.0+）",
@@ -120,7 +120,7 @@
                 "description": "自主回复最小间隔（秒）",
                 "hint": "防止短时间内连续主动回复。按当前会话计算。",
                 "type": "float",
-                "default": 60.0
+                "default": 60
             },
             "autonomous_reply_budget_per_hour": {
                 "description": "每小时主动回复预算",
@@ -289,7 +289,70 @@
                 "description": "LLM 单次压缩超时（秒）",
                 "hint": "v0.6.1+。超过此时间视作失败，保留旧摘要。",
                 "type": "float",
-                "default": 30.0
+                "default": 30
+            }
+        }
+    },
+    "output_step": {
+        "description": "输出微调",
+        "type": "object",
+        "hint": "v0.5.0+ 在 on_decorating_result 阶段对回复链做轻量微调。",
+        "items": {
+            "reply_step_enabled": {
+                "description": "启用智能引用（v0.5.0+）",
+                "hint": "开启后，bot 准备回复时如果原消息之后被插了 ≥ reply_step_threshold 条新消息，会在回复头部插入 Reply 组件（带可选 At）。",
+                "type": "bool",
+                "default": true
+            },
+            "reply_step_threshold": {
+                "description": "智能引用阈值",
+                "hint": "原消息之后被插多少条新消息才触发智能引用。0 表示关闭。",
+                "type": "int",
+                "default": 3
+            },
+            "reply_step_include_at": {
+                "description": "智能引用附带 @原消息发送者",
+                "hint": "开启后会在 Reply 组件之后再插入 At 组件，让原消息发送者收到 @ 提醒。仅 aiocqhttp/OneBot 生效。",
+                "type": "bool",
+                "default": true
+            }
+        }
+    },
+    "tools": {
+        "description": "群成员查询工具",
+        "type": "object",
+        "hint": "get_group_members_info LLM 工具的配置。",
+        "items": {
+            "member_cache_ttl": {
+                "description": "群成员名册缓存时间（秒）",
+                "hint": "get_group_members_info 工具调用 API 后缓存名册的秒数；0=禁用缓存，每次都打 go-cqhttp API",
+                "type": "int",
+                "default": 30
+            },
+            "member_truncate_threshold": {
+                "description": "LLM 工具返回成员上限",
+                "hint": "get_group_members_info 返回的最大成员数；超过会截断并标记 truncated=true，避免大群撑爆 LLM 上下文",
+                "type": "int",
+                "default": 500
+            }
+        }
+    },
+    "emotion_bridge": {
+        "description": "情绪状态机集成",
+        "type": "object",
+        "hint": "可选接入 astrbot_plugin_emotion_state_machine。缺失时情绪观察与精力相关功能静默降级（不报错、不影响主流程）；完整功能（to_text_part / 精力）建议 ESM v0.10.0+。",
+        "items": {
+            "emotion_observe_enabled": {
+                "description": "启用消息观察（on_group_message 接入点）",
+                "hint": "v0.8.0+。开启后，social_context 会在收消息后把用户原文喂给 astrbot_plugin_emotion_state_machine 的 observe_text，让情绪引擎做信号推断。bot 自己的消息不会喂（避免自反馈）。emotion 插件缺失/抛异常时会静默降级，不影响主流程。",
+                "type": "bool",
+                "default": true
+            },
+            "emotion_judge_inject_enabled": {
+                "description": "启用判断模型情绪注入（_judge_should_reply 接入点）",
+                "hint": "v0.8.0+。开启后，social_context 会在拼判断模型 prompt 时把 emotion_state_machine 的状态块（主路径 to_text_part 独立 TextPart，降级 build_prompt_block 字符串拼接）拼入，让 judge 也能'带着情绪'决策。",
+                "type": "bool",
+                "default": true
             }
         }
     },
@@ -358,69 +421,6 @@
                 "hint": "用户状态超过该条数时，按最后互动时间保留最近的，其余淘汰。0 = 不限制。默认 5000。",
                 "type": "int",
                 "default": 5000
-            }
-        }
-    },
-    "output_step": {
-        "description": "输出微调",
-        "type": "object",
-        "hint": "v0.5.0+ 在 on_decorating_result 阶段对回复链做轻量微调。",
-        "items": {
-            "reply_step_enabled": {
-                "description": "启用智能引用（v0.5.0+）",
-                "hint": "开启后，bot 准备回复时如果原消息之后被插了 ≥ reply_step_threshold 条新消息，会在回复头部插入 Reply 组件（带可选 At）。",
-                "type": "bool",
-                "default": true
-            },
-            "reply_step_threshold": {
-                "description": "智能引用阈值",
-                "hint": "原消息之后被插多少条新消息才触发智能引用。0 表示关闭。",
-                "type": "int",
-                "default": 3
-            },
-            "reply_step_include_at": {
-                "description": "智能引用附带 @原消息发送者",
-                "hint": "开启后会在 Reply 组件之后再插入 At 组件，让原消息发送者收到 @ 提醒。仅 aiocqhttp/OneBot 生效。",
-                "type": "bool",
-                "default": true
-            }
-        }
-    },
-    "tools": {
-        "description": "群成员查询工具",
-        "type": "object",
-        "hint": "get_group_members_info LLM 工具的配置。",
-        "items": {
-            "member_cache_ttl": {
-                "description": "群成员名册缓存时间（秒）",
-                "hint": "get_group_members_info 工具调用 API 后缓存名册的秒数；0=禁用缓存，每次都打 go-cqhttp API",
-                "type": "int",
-                "default": 30
-            },
-            "member_truncate_threshold": {
-                "description": "LLM 工具返回成员上限",
-                "hint": "get_group_members_info 返回的最大成员数；超过会截断并标记 truncated=true，避免大群撑爆 LLM 上下文",
-                "type": "int",
-                "default": 500
-            }
-        }
-    },
-    "emotion_bridge": {
-        "description": "情绪状态机集成",
-        "type": "object",
-        "hint": "v0.8.0+ 可选接入 astrbot_plugin_emotion_state_machine。v0.8.12+ 强依赖 ESM v0.10.0+（apply_self_reply_signal + to_text_part）。",
-        "items": {
-            "emotion_observe_enabled": {
-                "description": "启用消息观察（on_group_message 接入点）",
-                "hint": "v0.8.0+。开启后，social_context 会在收消息后把用户原文喂给 astrbot_plugin_emotion_state_machine 的 observe_text，让情绪引擎做信号推断。bot 自己的消息不会喂（避免自反馈）。emotion 插件缺失/抛异常时会静默降级，不影响主流程。",
-                "type": "bool",
-                "default": true
-            },
-            "emotion_judge_inject_enabled": {
-                "description": "启用判断模型情绪注入（_judge_should_reply 接入点）",
-                "hint": "v0.8.0+。开启后，social_context 会在拼判断模型 prompt 时把 emotion_state_machine 的状态块（主路径 to_text_part 独立 TextPart，降级 build_prompt_block 字符串拼接）拼入，让 judge 也能'带着情绪'决策。",
-                "type": "bool",
-                "default": true
             }
         }
     }

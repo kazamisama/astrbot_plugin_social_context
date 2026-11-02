@@ -28,6 +28,9 @@
 - `.gitattributes`：市场发布包排除 `tests/` 与开发文件
   （`.gitignore`、`.gitattributes` 自身）；`git clone` 仍为全量，pytest 不受影响。
 - 删除内部计划文件 `todo.md`：内容均已落地或取消，历史记录仍可从 git 取回。
+- `_conf_schema.json`：分组顺序与 README 对齐（输出微调 / 群成员工具 / 情绪桥接提前，
+  安全防护与持久化后移）；修正 emotion_bridge 组「ESM 强依赖」的过期表述；
+  `reply_inject_enabled` 补注旧键 `inject_enabled` 兼容。
 
 ## v0.9.0 - 2026-11-01
 
